@@ -35,7 +35,7 @@ def get_level_index(df: pd.DataFrame, level: Union[str, int]) -> int:
     elif isinstance(level, int):
         return level
     else:
-        raise NotImplementedError(f"This type of input is not supported")
+        raise NotImplementedError("This type of input is not supported")
 
 
 def fetch_df_by_index(
@@ -89,7 +89,9 @@ def fetch_df_by_col(df: pd.DataFrame, col_set: Union[str, List[str]]) -> pd.Data
         return df.loc(axis=1)[col_set]
 
 
-def convert_index_format(df: Union[pd.DataFrame, pd.Series], level: str = "datetime") -> Union[pd.DataFrame, pd.Series]:
+def convert_index_format(
+    df: Union[pd.DataFrame, pd.Series], level: str = "datetime"
+) -> Union[pd.DataFrame, pd.Series]:
     """
     Convert the format of df.MultiIndex according to the following rules:
         - If `level` is the first level of df.MultiIndex, do nothing

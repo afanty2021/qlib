@@ -39,7 +39,11 @@ class GetData:
             The file name can be accompanied by a version number, (e.g.: v2/qlib_data_simple_cn_1d_latest.zip),
             if no version number is attached, it will be downloaded from v0 by default.
         """
-        return f"{self.REMOTE_URL}/{file_name}" if "/" in file_name else f"{self.REMOTE_URL}/v0/{file_name}"
+        return (
+            f"{self.REMOTE_URL}/{file_name}"
+            if "/" in file_name
+            else f"{self.REMOTE_URL}/v0/{file_name}"
+        )
 
     def download(self, url: str, target_path: [Path, str]):
         """
@@ -60,7 +64,7 @@ class GetData:
 
         chunk_size = 1024
         logger.warning(
-            f"The data for the example is collected from Yahoo Finance. Please be aware that the quality of the data might not be perfect. (You can refer to the original data source: https://finance.yahoo.com/lookup.)"
+            "The data for the example is collected from Yahoo Finance. Please be aware that the quality of the data might not be perfect. (You can refer to the original data source: https://finance.yahoo.com/lookup.)"
         )
         logger.info(f"{os.path.basename(file_name)} downloading......")
         with tqdm(total=int(resp.headers.get("Content-Length", 0))) as p_bar:
@@ -69,7 +73,9 @@ class GetData:
                     fp.write(chunk)
                     p_bar.update(chunk_size)
 
-    def download_data(self, file_name: str, target_dir: [Path, str], delete_old: bool = True):
+    def download_data(
+        self, file_name: str, target_dir: [Path, str], delete_old: bool = True
+    ):
         """
         Download the specified file to the target folder.
 
@@ -98,7 +104,11 @@ class GetData:
         target_dir = Path(target_dir).expanduser()
         target_dir.mkdir(exist_ok=True, parents=True)
         # saved file name
-        _target_file_name = datetime.datetime.now().strftime("%Y%m%d%H%M%S") + "_" + os.path.basename(file_name)
+        _target_file_name = (
+            datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+            + "_"
+            + os.path.basename(file_name)
+        )
         target_path = target_dir.joinpath(_target_file_name)
 
         url = self.merge_remote_url(file_name)
@@ -117,7 +127,9 @@ class GetData:
         return status
 
     @staticmethod
-    def _unzip(file_path: [Path, str], target_dir: [Path, str], delete_old: bool = True):
+    def _unzip(
+        file_path: [Path, str], target_dir: [Path, str], delete_old: bool = True
+    ):
         file_path = Path(file_path)
         target_dir = Path(target_dir)
         if delete_old:
@@ -133,16 +145,22 @@ class GetData:
     @staticmethod
     def _delete_qlib_data(file_dir: Path):
         rm_dirs = []
-        for _name in ["features", "calendars", "instruments", "features_cache", "dataset_cache"]:
+        for _name in [
+            "features",
+            "calendars",
+            "instruments",
+            "features_cache",
+            "dataset_cache",
+        ]:
             _p = file_dir.joinpath(_name)
             if _p.exists():
                 rm_dirs.append(str(_p.resolve()))
         if rm_dirs:
             flag = input(
-                f"Will be deleted: "
+                "Will be deleted: "
                 f"\n\t{rm_dirs}"
                 f"\nIf you do not need to delete {file_dir}, please change the <--target_dir>"
-                f"\nAre you sure you want to delete, yes(Y/y), no (N/n):"
+                "\nAre you sure you want to delete, yes(Y/y), no (N/n):"
             )
             if str(flag) not in ["Y", "y"]:
                 sys.exit()
@@ -194,7 +212,7 @@ class GetData:
         if exists_skip and exists_qlib_data(target_dir):
             logger.warning(
                 f"Data already exists: {target_dir}, the data download will be skipped\n"
-                f"\tIf downloading is required: `exists_skip=False` or `change target_dir`"
+                "\tIf downloading is required: `exists_skip=False` or `change target_dir`"
             )
             return
 

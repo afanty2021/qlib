@@ -39,7 +39,7 @@ class OnlineTool:
             tag (str): the tags in `ONLINE_TAG`, `OFFLINE_TAG`
             recorder (Union[list,object]): the model's recorder
         """
-        raise NotImplementedError(f"Please implement the `set_online_tag` method.")
+        raise NotImplementedError("Please implement the `set_online_tag` method.")
 
     def get_online_tag(self, recorder: object) -> str:
         """
@@ -51,7 +51,7 @@ class OnlineTool:
         Returns:
             str: the online tag
         """
-        raise NotImplementedError(f"Please implement the `get_online_tag` method.")
+        raise NotImplementedError("Please implement the `get_online_tag` method.")
 
     def reset_online_tag(self, recorder: Union[list, object]):
         """
@@ -62,7 +62,7 @@ class OnlineTool:
                 the recorder you want to reset to 'online'.
 
         """
-        raise NotImplementedError(f"Please implement the `reset_online_tag` method.")
+        raise NotImplementedError("Please implement the `reset_online_tag` method.")
 
     def online_models(self) -> list:
         """
@@ -71,7 +71,7 @@ class OnlineTool:
         Returns:
             list: a list of `online` models.
         """
-        raise NotImplementedError(f"Please implement the `online_models` method.")
+        raise NotImplementedError("Please implement the `online_models` method.")
 
     def update_online_pred(self, to_date=None):
         """
@@ -81,7 +81,7 @@ class OnlineTool:
             to_date (pd.Timestamp): the pred before this date will be updated. None for updating to the latest.
 
         """
-        raise NotImplementedError(f"Please implement the `update_online_pred` method.")
+        raise NotImplementedError("Please implement the `update_online_pred` method.")
 
 
 class OnlineToolR(OnlineTool):
@@ -154,7 +154,11 @@ class OnlineToolR(OnlineTool):
             list: a list of `online` models.
         """
         exp_name = self._get_exp_name(exp_name)
-        return list(list_recorders(exp_name, lambda rec: self.get_online_tag(rec) == self.ONLINE_TAG).values())
+        return list(
+            list_recorders(
+                exp_name, lambda rec: self.get_online_tag(rec) == self.ONLINE_TAG
+            ).values()
+        )
 
     def update_online_pred(self, to_date=None, from_date=None, exp_name: str = None):
         """
@@ -171,11 +175,15 @@ class OnlineToolR(OnlineTool):
                 updater = PredUpdater(rec, to_date=to_date, from_date=from_date)
             except LoadObjectError as e:
                 # skip the recorder without pred
-                self.logger.warn(f"An exception `{str(e)}` happened when load `pred.pkl`, skip it.")
+                self.logger.warn(
+                    f"An exception `{str(e)}` happened when load `pred.pkl`, skip it."
+                )
                 continue
             updater.update()
 
-        self.logger.info(f"Finished updating {len(online_models)} online model predictions of {exp_name}.")
+        self.logger.info(
+            f"Finished updating {len(online_models)} online model predictions of {exp_name}."
+        )
 
     def _get_exp_name(self, exp_name):
         if exp_name is None:
