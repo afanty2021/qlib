@@ -1,6 +1,33 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+"""
+Qlib 数据访问模块 - 核心数据提供者实现
+
+本模块定义了 Qlib 数据访问层的核心组件，包括：
+1. 各种数据提供者的抽象基类和具体实现
+2. 本地数据访问和客户端数据访问支持
+3. 交易日历、股票列表、特征数据、表达式和数据集的统一访问接口
+4. 高效的数据缓存和并行处理机制
+
+主要组件：
+- CalendarProvider: 交易日历数据提供者
+- InstrumentProvider: 股票/工具数据提供者
+- FeatureProvider: 特征数据提供者
+- ExpressionProvider: 表达式计算提供者
+- DatasetProvider: 数据集提供者
+- PITProvider: 点对点数据提供者
+
+使用方式：
+    from qlib.data import D
+
+    # 获取股票列表
+    instruments = D.instruments('csi300')
+
+    # 获取特征数据
+    features = D.features(instruments, ['close', 'volume'],
+                         start_time='2020-01-01', end_time='2020-12-31')
+"""
 
 from __future__ import division
 from __future__ import print_function
@@ -16,15 +43,15 @@ import numpy as np
 import pandas as pd
 from typing import List, Union, Optional
 
-# For supporting multiprocessing in outer code, joblib is used
+# 支持外部代码中的多进程处理，使用 joblib
 from joblib import delayed
 
-from .cache import H
-from ..config import C
-from .inst_processor import InstProcessor
+from .cache import H  # 全局缓存对象
+from ..config import C  # 全局配置对象
+from .inst_processor import InstProcessor  # 实例处理器
 
-from ..log import get_module_logger
-from .cache import DiskDatasetCache
+from ..log import get_module_logger  # 日志记录器
+from .cache import DiskDatasetCache  # 磁盘数据集缓存
 from ..utils import (
     Wrapper,
     init_instance_by_config,
@@ -38,76 +65,147 @@ from ..utils import (
     read_period_data,
     get_period_list,
 )
-from ..utils.paral import ParallelExt
+from ..utils.paral import ParallelExt  # 并行处理扩展
 from .ops import Operators  # pylint: disable=W0611  # noqa: F401
 
 
 class ProviderBackendMixin:
     """
-    This helper class tries to make the provider based on storage backend more convenient
-    It is not necessary to inherent this class if that provider don't rely on the backend storage
+    存储后端提供者混入类
+
+    这个辅助类使得基于存储后端的数据提供者更加便利。
+    如果提供者不依赖后端存储，则不需要继承此类。
+
+    主要功能：
+    1. 根据类名自动推断默认的后端存储类
+    2. 提供统一的后端对象创建接口
+    3. 支持后端配置的动态修改
+
+    使用示例：
+        class LocalCalendarProvider(CalendarProvider, ProviderBackendMixin):
+            # 自动使用 FileCalendarStorage 作为后端
+            pass
     """
 
     def get_default_backend(self):
+        """
+        获取默认的后端存储配置
+
+        根据当前类名自动推断后端存储类：
+        - LocalCalendarProvider -> FileCalendarStorage
+        - LocalInstrumentProvider -> FileInstrumentStorage
+        - LocalFeatureProvider -> FileFeatureStorage
+
+        Returns:
+            dict: 后端存储配置字典
+        """
         backend = {}
+        # 从类名中提取提供者名称（如 LocalCalendarProvider 中的 Calendar）
         provider_name: str = re.findall("[A-Z][^A-Z]*", self.__class__.__name__)[-2]
-        # set default storage class
+        # 设置默认存储类名
         backend.setdefault("class", f"File{provider_name}Storage")
-        # set default storage module
+        # 设置默认存储模块路径
         backend.setdefault("module_path", "qlib.data.storage.file_storage")
         return backend
 
     def backend_obj(self, **kwargs):
+        """
+        创建后端存储对象
+
+        根据配置创建后端存储实例，支持动态参数覆盖。
+
+        Args:
+            **kwargs: 要覆盖或添加的后端参数
+
+        Returns:
+            object: 初始化的后端存储对象实例
+        """
+        # 使用已配置的后端或获取默认后端
         backend = self.backend if self.backend else self.get_default_backend()
+        # 深拷贝后端配置以避免修改原始配置
         backend = copy.deepcopy(backend)
+        # 更新后端参数
         backend.setdefault("kwargs", {}).update(**kwargs)
+        # 根据配置初始化后端对象
         return init_instance_by_config(backend)
 
 
 class CalendarProvider(abc.ABC):
-    """Calendar provider base class
+    """
+    交易日历提供者基类
 
-    Provide calendar data.
+    提供交易日历数据访问的抽象接口，负责：
+    1. 加载和缓存交易日历数据
+    2. 根据时间范围和频率过滤交易日
+    3. 支持历史和未来交易日的查询
+    4. 提供高效的日历索引定位功能
+
+    子类需要实现的方法：
+    - load_calendar(): 从数据源加载原始日历数据
+
+    使用示例：
+        calendar_provider = LocalCalendarProvider()
+        # 获取2020年的交易日历
+        trading_days = calendar_provider.calendar(
+            start_time="2020-01-01",
+            end_time="2020-12-31",
+            freq="day"
+        )
     """
 
     def calendar(self, start_time=None, end_time=None, freq="day", future=False):
-        """Get calendar of certain market in given time range.
-
-        Parameters
-        ----------
-        start_time : str
-            start of the time range.
-        end_time : str
-            end of the time range.
-        freq : str
-            time frequency, available: year/quarter/month/week/day.
-        future : bool
-            whether including future trading day.
-
-        Returns
-        ----------
-        list
-            calendar list
         """
+        获取指定时间范围内的交易日历
+
+        根据开始时间、结束时间、频率等参数返回符合条件的交易日列表。
+        支持灵活的时间范围查询和未来交易日查询。
+
+        Args:
+            start_time (str, optional): 时间范围开始时间。格式：YYYY-MM-DD
+            end_time (str, optional): 时间范围结束时间。格式：YYYY-MM-DD
+            freq (str): 时间频率。可选值：year/quarter/month/week/day，默认为"day"
+            future (bool): 是否包含未来交易日。默认为False
+
+        Returns:
+            np.ndarray: 交易日历数组，包含所有符合条件的交易日期
+
+        Note:
+            - 如果查询时间范围超出数据范围，返回空数组
+            - 如果未指定时间范围，使用全部可用日历数据
+            - 支持字符串"None"作为参数值，会被转换为None
+        """
+        # 从缓存或数据源获取完整日历和索引
         _calendar, _calendar_index = self._get_calendar(freq, future)
+
+        # 处理字符串"None"的情况
         if start_time == "None":
             start_time = None
         if end_time == "None":
             end_time = None
-        # strip
+
+        # 处理开始时间
         if start_time:
             start_time = pd.Timestamp(start_time)
+            # 如果开始时间超出日历范围，返回空数组
             if start_time > _calendar[-1]:
                 return np.array([])
         else:
+            # 如果未指定开始时间，使用日历的最早日期
             start_time = _calendar[0]
+
+        # 处理结束时间
         if end_time:
             end_time = pd.Timestamp(end_time)
+            # 如果结束时间早于日历开始，返回空数组
             if end_time < _calendar[0]:
                 return np.array([])
         else:
+            # 如果未指定结束时间，使用日历的最晚日期
             end_time = _calendar[-1]
+
+        # 定位时间范围在日历中的索引位置
         _, _, si, ei = self.locate_index(start_time, end_time, freq, future)
+        # 返回切片后的日历数据
         return _calendar[si : ei + 1]
 
     def locate_index(
@@ -117,87 +215,133 @@ class CalendarProvider(abc.ABC):
         freq: str,
         future: bool = False,
     ):
-        """Locate the start time index and end time index in a calendar under certain frequency.
-
-        Parameters
-        ----------
-        start_time : pd.Timestamp
-            start of the time range.
-        end_time : pd.Timestamp
-            end of the time range.
-        freq : str
-            time frequency, available: year/quarter/month/week/day.
-        future : bool
-            whether including future trading day.
-
-        Returns
-        -------
-        pd.Timestamp
-            the real start time.
-        pd.Timestamp
-            the real end time.
-        int
-            the index of start time.
-        int
-            the index of end time.
         """
+        在指定频率的日历中定位开始时间和结束时间的索引位置
+
+        这个方法用于将任意时间点映射到交易日历中的具体索引位置，
+        自动处理非交易日的情况，返回最接近的有效交易日。
+
+        Args:
+            start_time (Union[pd.Timestamp, str]): 时间范围开始时间
+            end_time (Union[pd.Timestamp, str]): 时间范围结束时间
+            freq (str): 时间频率。可选值：year/quarter/month/week/day
+            future (bool): 是否包含未来交易日。默认为False
+
+        Returns:
+            tuple: 包含四个元素的元组
+                - pd.Timestamp: 实际的开始时间（交易日）
+                - pd.Timestamp: 实际的结束时间（交易日）
+                - int: 开始时间在日历中的索引
+                - int: 结束时间在日历中的索引
+
+        Raises:
+            IndexError: 当开始时间是未来日期且future=False时抛出
+
+        Note:
+            - 如果开始时间不是交易日，会自动向后找到最近的交易日
+            - 如果结束时间不是交易日，会自动向前找到最近的交易日
+            - 使用二分查找算法提高定位效率
+        """
+        # 转换为Timestamp格式
         start_time = pd.Timestamp(start_time)
         end_time = pd.Timestamp(end_time)
+
+        # 获取指定频率和未来标志的日历数据
         calendar, calendar_index = self._get_calendar(freq=freq, future=future)
+
+        # 处理开始时间：如果不是交易日，找到最近的交易日
         if start_time not in calendar_index:
             try:
+                # 使用二分查找找到第一个大于等于开始时间的交易日
                 start_time = calendar[bisect.bisect_left(calendar, start_time)]
             except IndexError as index_e:
+                # 如果开始时间超出日历范围且未启用未来日期查询
                 raise IndexError(
                     "`start_time` uses a future date, if you want to get future trading days, you can use: `future=True`"
                 ) from index_e
+
+        # 获取开始时间的索引
         start_index = calendar_index[start_time]
+
+        # 处理结束时间：如果不是交易日，找到最近的交易日
         if end_time not in calendar_index:
+            # 使用二分查找找到最后一个小于等于结束时间的交易日
             end_time = calendar[bisect.bisect_right(calendar, end_time) - 1]
+
+        # 获取结束时间的索引
         end_index = calendar_index[end_time]
+
         return start_time, end_time, start_index, end_index
 
     def _get_calendar(self, freq, future):
-        """Load calendar using memcache.
-
-        Parameters
-        ----------
-        freq : str
-            frequency of read calendar file.
-        future : bool
-            whether including future trading day.
-
-        Returns
-        -------
-        list
-            list of timestamps.
-        dict
-            dict composed by timestamp as key and index as value for fast search.
         """
+        使用内存缓存加载日历数据
+
+        这个方法实现了日历数据的缓存机制，避免重复从数据源加载相同的日历。
+        使用全局缓存对象 H 来存储日历数据和索引。
+
+        Args:
+            freq (str): 日历频率。可选值：year/quarter/month/week/day
+            future (bool): 是否包含未来交易日
+
+        Returns:
+            tuple: 包含两个元素的元组
+                - np.ndarray: 交易日历时间戳数组
+                - dict: 时间戳到索引的映射字典（用于快速查找）
+
+        Note:
+            - 缓存键格式："{频率}_future_{是否包含未来}"
+            - 索引字典提供O(1)的时间戳查找效率
+            - 首次访问时会从数据源加载并缓存，后续访问直接从缓存读取
+        """
+        # 构建缓存键标识符
         flag = f"{freq}_future_{future}"
+
+        # 检查缓存中是否已存在该日历数据
         if flag not in H["c"]:
+            # 缓存未命中，从数据源加载日历
             _calendar = np.array(self.load_calendar(freq, future))
-            _calendar_index = {x: i for i, x in enumerate(_calendar)}  # for fast search
+            # 构建时间戳到索引的映射字典，用于快速查找
+            _calendar_index = {x: i for i, x in enumerate(_calendar)}
+            # 将日历数据和索引存入缓存
             H["c"][flag] = _calendar, _calendar_index
+
+        # 返回缓存中的日历数据
         return H["c"][flag]
 
     def _uri(self, start_time, end_time, freq, future=False):
-        """Get the uri of calendar generation task."""
+        """
+        获取日历生成任务的唯一URI
+
+        根据参数生成唯一的资源标识符，用于缓存管理和任务识别。
+
+        Args:
+            start_time: 开始时间
+            end_time: 结束时间
+            freq: 频率
+            future (bool): 是否包含未来交易日
+
+        Returns:
+            str: 基于参数哈希的唯一URI
+        """
         return hash_args(start_time, end_time, freq, future)
 
     def load_calendar(self, freq, future):
-        """Load original calendar timestamp from file.
+        """
+        从文件加载原始日历时间戳
 
-        Parameters
-        ----------
-        freq : str
-            frequency of read calendar file.
-        future: bool
+        抽象方法，子类必须实现。负责从具体的数据源（如文件、数据库等）
+        加载指定频率和未来标志的日历数据。
 
-        Returns
-        ----------
-        list
-            list of timestamps
+        Args:
+            freq (str): 日历频率。可选值：year/quarter/month/week/day
+            future (bool): 是否包含未来交易日
+
+        Returns:
+            list: 时间戳列表
+
+        Raises:
+            NotImplementedError: 子类必须实现此方法
         """
         raise NotImplementedError(
             "Subclass of CalendarProvider must implement `load_calendar` method"
@@ -205,95 +349,135 @@ class CalendarProvider(abc.ABC):
 
 
 class InstrumentProvider(abc.ABC):
-    """Instrument provider base class
+    """
+    股票/工具提供者基类
 
-    Provide instrument data.
+    提供股票、期货、期权等交易工具的数据访问抽象接口。
+    支持市场定义、动态过滤、时间范围查询等功能。
+
+    主要功能：
+    1. 获取市场/指数的成分股列表
+    2. 支持动态过滤器（如价格、市值、行业等）
+    3. 管理工具的有效时间范围
+    4. 提供灵活的工具配置接口
+
+    子类需要实现的方法：
+    - list_instruments(): 列出符合条件的工具
+
+    使用示例：
+        # 获取沪深300成分股
+        config = InstrumentProvider.instruments("csi300")
+        instruments = provider.list_instruments(config,
+                                               start_time="2020-01-01",
+                                               end_time="2020-12-31")
     """
 
     @staticmethod
     def instruments(
         market: Union[List, str] = "all", filter_pipe: Union[List, None] = None
     ):
-        """Get the general config dictionary for a base market adding several dynamic filters.
-
-        Parameters
-        ----------
-        market : Union[List, str]
-            str:
-                market/industry/index shortname, e.g. all/sse/szse/sse50/csi300/csi500.
-            list:
-                ["ID1", "ID2"]. A list of stocks
-        filter_pipe : list
-            the list of dynamic filters.
-
-        Returns
-        ----------
-        dict: if isinstance(market, str)
-            dict of stockpool config.
-
-            {`market` => base market name, `filter_pipe` => list of filters}
-
-            example :
-
-            .. code-block::
-
-                {'market': 'csi500',
-                'filter_pipe': [{'filter_type': 'ExpressionDFilter',
-                'rule_expression': '$open<40',
-                'filter_start_time': None,
-                'filter_end_time': None,
-                'keep': False},
-                {'filter_type': 'NameDFilter',
-                'name_rule_re': 'SH[0-9]{4}55',
-                'filter_start_time': None,
-                'filter_end_time': None}]}
-
-        list: if isinstance(market, list)
-            just return the original list directly.
-            NOTE: this will make the instruments compatible with more cases. The user code will be simpler.
         """
+        获取基础市场添加动态过滤器的通用配置字典
+
+        构建股票池配置，支持市场选择和多层过滤器的组合使用。
+
+        Args:
+            market (Union[List, str]): 市场标识或股票列表
+                str: 市场/行业/指数简称，如 all/sse/szse/sse50/csi300/csi500
+                list: 股票代码列表，如 ["000001.SZ", "000002.SZ"]
+            filter_pipe (list, optional): 动态过滤器列表
+
+        Returns:
+            Union[dict, list]:
+                dict: 当 market 为字符串时，返回股票池配置字典
+                    格式: {"market": 市场名称, "filter_pipe": 过滤器列表}
+                list: 当 market 为列表时，直接返回原股票列表
+
+        Example:
+            >>> config = {
+            ...     'market': 'csi500',
+            ...     'filter_pipe': [
+            ...         {
+            ...             'filter_type': 'ExpressionDFilter',
+            ...             'rule_expression': '$open<40',
+            ...             'filter_start_time': None,
+            ...             'filter_end_time': None,
+            ...             'keep': False
+            ...         },
+            ...         {
+            ...             'filter_type': 'NameDFilter',
+            ...             'name_rule_re': 'SH[0-9]{4}55',
+            ...             'filter_start_time': None,
+            ...             'filter_end_time': None
+            ...         }
+            ...     ]
+            ... }
+
+        Note:
+            - 过滤器的顺序会影响最终结果，系统会按顺序应用所有过滤器
+            - 支持直接传入股票列表，提高使用的便利性
+        """
+        # 如果传入的是股票列表，直接返回
         if isinstance(market, list):
             return market
+
+        # 延迟导入避免循环依赖
         from .filter import SeriesDFilter  # pylint: disable=C0415
 
+        # 初始化过滤器管道
         if filter_pipe is None:
             filter_pipe = []
+
+        # 构建基础配置
         config = {"market": market, "filter_pipe": []}
-        # the order of the filters will affect the result, so we need to keep
-        # the order
+
+        # 处理过滤器：保持过滤器顺序，因为顺序会影响结果
         for filter_t in filter_pipe:
             if isinstance(filter_t, dict):
+                # 字典格式的过滤器配置
                 _config = filter_t
             elif isinstance(filter_t, SeriesDFilter):
+                # SeriesDFilter 对象转换为配置字典
                 _config = filter_t.to_config()
             else:
+                # 不支持的过滤器类型
                 raise TypeError(
                     f"Unsupported filter types: {type(filter_t)}! Filter only supports dict or isinstance(filter, SeriesDFilter)"
                 )
             config["filter_pipe"].append(_config)
+
         return config
 
     @abc.abstractmethod
     def list_instruments(
         self, instruments, start_time=None, end_time=None, freq="day", as_list=False
     ):
-        """List the instruments based on a certain stockpool config.
+        """
+        根据股票池配置列出符合条件的工具
 
-        Parameters
-        ----------
-        instruments : dict
-            stockpool config.
-        start_time : str
-            start of the time range.
-        end_time : str
-            end of the time range.
-        as_list : bool
-            return instruments as list or dict.
+        抽象方法，子类必须实现。根据配置参数获取在指定时间范围内
+        有效的交易工具列表，支持多种返回格式。
 
-        Returns
-        -------
-        dict or list
-            instruments list or dictionary with time spans
+        Args:
+            instruments (dict): 股票池配置字典
+            start_time (str, optional): 时间范围开始时间
+            end_time (str, optional): 时间范围结束时间
+            freq (str): 时间频率。默认为"day"
+            as_list (bool): 是否以列表形式返回。默认为False（返回字典）
+
+        Returns:
+            Union[dict, list]:
+                dict: 工具字典，包含每个工具的时间跨度信息
+                    格式: {工具代码: [(开始时间, 结束时间), ...]}
+                list: 工具代码列表（当 as_list=True 时）
+
+        Raises:
+            NotImplementedError: 子类必须实现此方法
+
+        Note:
+            - 返回的工具都是在指定时间范围内有效的
+            - 字典格式包含详细的时间跨度信息
+            - 列表格式仅包含工具代码，更简洁
         """
         raise NotImplementedError(
             "Subclass of InstrumentProvider must implement `list_instruments` method"
@@ -302,51 +486,107 @@ class InstrumentProvider(abc.ABC):
     def _uri(
         self, instruments, start_time=None, end_time=None, freq="day", as_list=False
     ):
+        """
+        生成工具列表任务的唯一URI
+
+        根据所有参数生成哈希值，用于缓存管理和任务识别。
+
+        Args:
+            instruments: 工具配置
+            start_time: 开始时间
+            end_time: 结束时间
+            freq: 频率
+            as_list (bool): 是否返回列表格式
+
+        Returns:
+            str: 基于参数哈希的唯一URI
+        """
         return hash_args(instruments, start_time, end_time, freq, as_list)
 
-    # instruments type
-    LIST = "LIST"
-    DICT = "DICT"
-    CONF = "CONF"
+    # 工具类型常量定义
+    LIST = "LIST"    # 列表类型：直接的股票代码列表
+    DICT = "DICT"    # 字典类型：包含时间跨度的股票字典
+    CONF = "CONF"    # 配置类型：市场配置字典
 
     @classmethod
     def get_inst_type(cls, inst):
+        """
+        识别工具输入的类型
+
+        根据输入数据的结构和内容判断其类型，用于后续的
+        相应处理逻辑。
+
+        Args:
+            inst: 工具配置数据
+
+        Returns:
+            str: 工具类型（LIST、DICT 或 CONF）
+
+        Raises:
+            ValueError: 无法识别的工具类型
+
+        Note:
+            - CONF: 包含"market"键的配置字典
+            - DICT: 不包含"market"键的普通字典
+            - LIST: 列表、元组、pandas.Index 或 numpy.ndarray
+        """
         if "market" in inst:
-            return cls.CONF
+            return cls.CONF  # 市场配置类型
         if isinstance(inst, dict):
-            return cls.DICT
+            return cls.DICT  # 字典类型
         if isinstance(inst, (list, tuple, pd.Index, np.ndarray)):
-            return cls.LIST
+            return cls.LIST  # 列表类型
         raise ValueError(f"Unknown instrument type {inst}")
 
 
 class FeatureProvider(abc.ABC):
-    """Feature provider class
+    """
+    特征数据提供者基类
 
-    Provide feature data.
+    提供原始特征数据的访问接口，包括价格、成交量、技术指标等。
+    这是数据访问层的基础组件，为上层的表达式计算和数据集提供数据。
+
+    主要功能：
+    1. 提供单个工具的单个特征数据访问
+    2. 支持不同的时间频率和数据范围
+    3. 为表达式系统提供基础数据支持
+    4. 支持高效的数据索引和切片
+
+    子类需要实现的方法：
+    - feature(): 获取指定工具的特征数据
+
+    使用示例：
+        provider = LocalFeatureProvider()
+        # 获取股票000001.SZ的收盘价数据
+        close_prices = provider.feature("000001.SZ", "$close",
+                                       start_index=0, end_index=100, freq="day")
     """
 
     @abc.abstractmethod
-    def feature(self, instrument, field, start_time, end_time, freq):
-        """Get feature data.
+    def feature(self, instrument, field, start_index, end_index, freq):
+        """
+        获取指定工具的特征数据
 
-        Parameters
-        ----------
-        instrument : str
-            a certain instrument.
-        field : str
-            a certain field of feature.
-        start_time : str
-            start of the time range.
-        end_time : str
-            end of the time range.
-        freq : str
-            time frequency, available: year/quarter/month/week/day.
+        抽象方法，子类必须实现。返回单个工具在指定时间范围内
+        的某个特征数据序列。
 
-        Returns
-        -------
-        pd.Series
-            data of a certain feature
+        Args:
+            instrument (str): 工具代码，如 "000001.SZ"
+            field (str): 特征字段名，如 "$close"、"$volume" 等
+            start_index (int): 开始索引位置
+            end_index (int): 结束索引位置
+            freq (str): 数据频率。可选值：year/quarter/month/week/day
+
+        Returns:
+            pd.Series: 特征数据序列，索引为时间或整数
+
+        Raises:
+            NotImplementedError: 子类必须实现此方法
+
+        Note:
+            - field 通常以 "$" 开头表示基础特征
+            - 返回的数据类型根据具体实现可能是时间索引或整数索引
+            - start_index 和 end_index 是相对于数据源的索引，不是时间戳
         """
         raise NotImplementedError(
             "Subclass of FeatureProvider must implement `feature` method"
@@ -978,21 +1218,48 @@ class LocalExpressionProvider(ExpressionProvider):
 
 
 class LocalDatasetProvider(DatasetProvider):
-    """Local dataset data provider class
+    """
+    本地数据集提供者类
 
-    Provide dataset data from local data source.
+    从本地数据源提供完整的数据集访问功能。这是 Qlib 最核心的
+    数据访问组件，负责将多个工具的多个特征组合成统一的数据集。
+
+    主要功能：
+    1. 支持多工具、多特征的数据集查询
+    2. 提供时间对齐和数据缓存机制
+    3. 支持并行处理提高数据加载效率
+    4. 支持实例级别的数据后处理
+    5. 提供表达式缓存预热的批量操作
+
+    核心特性：
+    - 时间对齐：将数据对齐到标准交易日历
+    - 并行处理：使用多进程并行加载不同工具的数据
+    - 缓存优化：多级缓存机制提高访问效率
+    - 灵活配置：支持不同的数据处理器和过滤条件
+
+    Args:
+        align_time (bool): 是否将时间对齐到日历。默认为True
+
+    Note:
+        - 对于固定频率的数据，时间对齐可以提高缓存效率
+        - 对于灵活频率的数据，应关闭时间对齐功能
+        - 对齐后的查询可以使用相同的缓存，提高性能
     """
 
     def __init__(self, align_time: bool = True):
         """
-        Parameters
-        ----------
-        align_time : bool
-            Will we align the time to calendar
-            the frequency is flexible in some dataset and can't be aligned.
-            For the data with fixed frequency with a shared calendar, the align data to the calendar will provides following benefits
+        初始化本地数据集提供者
 
-            - Align queries to the same parameters, so the cache can be shared.
+        Args:
+            align_time (bool): 是否将时间对齐到标准日历
+                True: 将数据对齐到固定频率的日历点，有利于缓存共享
+                False: 保持原始数据的时间点，适用于灵活频率的数据
+
+        Note:
+            时间对齐的好处：
+            - 统一查询参数，便于缓存共享
+            - 确保不同工具的数据在时间维度上对齐
+            - 提高后续数据处理的效率
         """
         super().__init__()
         self.align_time = align_time

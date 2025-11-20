@@ -1,5 +1,27 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
+
+"""
+Qlib 策略基类模块
+
+本模块定义了 Qlib 中所有交易策略的基础抽象类，提供：
+1. 统一的策略接口规范
+2. 灵活的决策生成机制
+3. 支持嵌套策略和多时间尺度执行
+4. 强化学习策略的专用接口
+
+主要组件：
+- BaseStrategy: 所有策略的基础抽象类
+- RLStrategy: 强化学习策略基类
+- RLIntStrategy: 集成强化学习解释器的策略类
+
+设计原则：
+- 分离关注点：策略逻辑与执行机制分离
+- 可组合性：支持策略的嵌套和组合
+- 状态管理：提供完整的策略生命周期管理
+- 灵活配置：支持从配置文件初始化策略
+"""
+
 from __future__ import annotations
 
 from abc import ABCMeta, abstractmethod
@@ -25,7 +47,39 @@ __all__ = ["BaseStrategy", "RLStrategy", "RLIntStrategy"]
 
 
 class BaseStrategy:
-    """Base strategy for trading"""
+    """
+    交易策略基类
+
+    这是 Qlib 中所有交易策略的基础抽象类，定义了策略的基本接口
+    和生命周期管理。支持嵌套执行和多时间尺度策略设计。
+
+    主要功能：
+    1. 提供统一的策略决策接口
+    2. 支持策略状态管理和生命周期控制
+    3. 兼容嵌套执行和多层次时间尺度
+    4. 提供灵活的基础设施访问接口
+
+    核心概念：
+    - 外层决策：父策略传递给当前策略的交易决策
+    - 层级基础设施：当前层级专用的基础设施组件
+    - 公共基础设施：所有层级共享的基础设施组件
+    - 交易所对象：用于执行交易的市场模拟器
+
+    使用场景：
+    - 单一策略：独立运行的交易策略
+    - 嵌套策略：作为子策略在更大框架中运行
+    - 多时间尺度：处理不同时间粒度的决策
+
+    Example:
+        >>> class MyStrategy(BaseStrategy):
+        ...     def generate_trade_decision(self, execute_result):
+        ...         # 基于历史执行结果生成新的交易决策
+        ...         return TradeDecision(...)
+        >>>
+        >>> strategy = MyStrategy()
+        >>> strategy.reset(level_infra=infra)
+        >>> decision = strategy.generate_trade_decision(None)
+    """
 
     def __init__(
         self,
@@ -35,29 +89,61 @@ class BaseStrategy:
         trade_exchange: Exchange = None,
     ) -> None:
         """
-        Parameters
-        ----------
-        outer_trade_decision : BaseTradeDecision, optional
-            the trade decision of outer strategy which this strategy relies, and it will be traded in
-            [start_time, end_time], by default None
+        初始化策略对象
 
-            - If the strategy is used to split trade decision, it will be used
-            - If the strategy is used for portfolio management, it can be ignored
-        level_infra : LevelInfrastructure, optional
-            level shared infrastructure for backtesting, including trade calendar
-        common_infra : CommonInfrastructure, optional
-            common infrastructure for backtesting, including trade_account, trade_exchange, .etc
+        Args:
+            outer_trade_decision (BaseTradeDecision, optional): 外层策略的交易决策
+                - 这是父策略传递给当前策略的交易决策
+                - 如果当前策略用于拆分交易决策，则此参数会被使用
+                - 如果当前策略用于投资组合管理，则可以忽略此参数
+                - 默认值：None
 
-        trade_exchange : Exchange
-            exchange that provides market info, used to deal order and generate report
+            level_infra (LevelInfrastructure, optional): 层级共享基础设施
+                - 当前策略层级专用的基础设施组件
+                - 包含该层级的交易日历等信息
+                - 用于支持嵌套执行和多时间尺度策略
+                - 默认值：None
 
-            - If `trade_exchange` is None, self.trade_exchange will be set with common_infra
-            - It allows different trade_exchanges is used in different executions.
-            - For example:
+            common_infra (CommonInfrastructure, optional): 公共共享基础设施
+                - 所有策略层级共享的基础设施组件
+                - 包含交易账户、交易所等公共资源
+                - 确保不同层级的策略能访问相同的基础资源
+                - 默认值：None
 
-                - In daily execution, both daily exchange and minutely are usable, but the daily exchange is
-                  recommended because it run faster.
-                - In minutely execution, the daily exchange is not usable, only the minutely exchange is recommended.
+            trade_exchange (Exchange): 交易所对象
+                - 提供市场信息、处理订单、生成报告的交易环境
+                - 如果为None，将从common_infra自动获取
+                - 允许在不同执行中使用不同的交易所
+                - 使用场景示例：
+                    * 日级执行：可以使用日级或分钟级交易所，推荐日级（更快）
+                    * 分钟级执行：只能使用分钟级交易所，日级交易所不适用
+
+        Note:
+            === 参数使用指南 ===
+
+            outer_trade_decision 的使用场景：
+            - 策略拆分：将大额交易拆分为多个小额交易
+            - 风险控制：根据外部约束调整交易决策
+            - 资金分配：在多个子策略间分配资金
+
+            level_infra vs common_infra：
+            - level_infra：层级特定，如日级策略的日历
+            - common_infra：全局共享，如统一的交易账户
+            - 这种设计支持灵活的嵌套策略架构
+
+            trade_exchange 选择原则：
+            - 匹配时间频率：日级策略用日级交易所，分钟级用分钟级
+            - 性能考虑：更粗粒度的交易所通常运行更快
+            - 数据完整性：确保交易所提供的数据满足策略需求
+
+        Example:
+            >>> # 嵌套策略示例
+            >>> outer_strategy = PortfolioStrategy()
+            >>> inner_strategy = StockStrategy(
+            ...     outer_trade_decision=decision,
+            ...     level_infra=inner_infra,
+            ...     common_infra=shared_infra
+            ... )
         """
 
         self._reset(
