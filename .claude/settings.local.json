@@ -3,5 +3,9 @@
     "additionalDirectories": [
       "/Users/berton/github/RD-Agent"
     ]
-  }
+  },
+  "disabledMcpjsonServers": [
+    "claude-flow@alpha",
+    "flow-nexus"
+  ]
 }

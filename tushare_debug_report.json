@@ -1,0 +1,148 @@
+{
+  "timestamp": "2025-11-24T21:01:47.724307",
+  "token_info": {
+    "token_valid": true,
+    "basic_access": true,
+    "api_response": "success",
+    "sample_data_count": 10
+  },
+  "600519_debug": {
+    "最近一个月_method1": {
+      "count": 21,
+      "success": true,
+      "date_range": "20241101 - 20241129"
+    },
+    "最近一个月_method2": {
+      "count": 0,
+      "success": false,
+      "error": "请指定正确的接口名"
+    },
+    "最近一个月_calendar": {
+      "trading_days": 21,
+      "data_coverage_ratio": 1.0
+    },
+    "最近三个月_method1": {
+      "count": 58,
+      "success": true,
+      "date_range": "20240902 - 20241129"
+    },
+    "最近三个月_method2": {
+      "count": 0,
+      "success": false,
+      "error": "请指定正确的接口名"
+    },
+    "最近三个月_calendar": {
+      "trading_days": 58,
+      "data_coverage_ratio": 1.0
+    },
+    "最近半年_method1": {
+      "count": 142,
+      "success": true,
+      "date_range": "20240506 - 20241129"
+    },
+    "最近半年_method2": {
+      "count": 0,
+      "success": false,
+      "error": "请指定正确的接口名"
+    },
+    "最近半年_calendar": {
+      "trading_days": 142,
+      "data_coverage_ratio": 1.0
+    },
+    "最近一年_method1": {
+      "count": 241,
+      "success": true,
+      "date_range": "20231201 - 20241129"
+    },
+    "最近一年_method2": {
+      "count": 0,
+      "success": false,
+      "error": "请指定正确的接口名"
+    },
+    "最近一年_calendar": {
+      "trading_days": 241,
+      "data_coverage_ratio": 1.0
+    },
+    "2024全年_method1": {
+      "count": 220,
+      "success": true,
+      "date_range": "20240102 - 20241129"
+    },
+    "2024全年_method2": {
+      "count": 0,
+      "success": false,
+      "error": "请指定正确的接口名"
+    },
+    "2024全年_calendar": {
+      "trading_days": 220,
+      "data_coverage_ratio": 1.0
+    },
+    "2023全年_method1": {
+      "count": 242,
+      "success": true,
+      "date_range": "20230103 - 20231229"
+    },
+    "2023全年_method2": {
+      "count": 0,
+      "success": false,
+      "error": "请指定正确的接口名"
+    },
+    "2023全年_calendar": {
+      "trading_days": 242,
+      "data_coverage_ratio": 1.0
+    }
+  },
+  "other_stocks": {
+    "000001.SZ": {
+      "name": "平安银行",
+      "count": 39,
+      "success": true,
+      "date_range": "20241008 - 20241129"
+    },
+    "000002.SZ": {
+      "name": "万科A",
+      "count": 39,
+      "success": true,
+      "date_range": "20241008 - 20241129"
+    },
+    "600036.SH": {
+      "name": "招商银行",
+      "count": 39,
+      "success": true,
+      "date_range": "20241008 - 20241129"
+    },
+    "600000.SH": {
+      "name": "浦发银行",
+      "count": 39,
+      "success": true,
+      "date_range": "20241008 - 20241129"
+    }
+  },
+  "api_limits": {
+    "1个月": {
+      "days": 30,
+      "success": true,
+      "count": 21
+    },
+    "3个月": {
+      "days": 90,
+      "success": true,
+      "count": 59
+    },
+    "6个月": {
+      "days": 180,
+      "success": true,
+      "count": 122
+    },
+    "1年": {
+      "days": 365,
+      "success": true,
+      "count": 243
+    },
+    "2年": {
+      "days": 730,
+      "success": true,
+      "count": 483
+    }
+  }
+}

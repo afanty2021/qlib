@@ -1,0 +1,28 @@
+{
+  "token": "eb13b3bfd2bd07fd9eb40234f19941c73f230e1e98cc212b8cd407c7",
+  "api_url": "http://api.tushare.pro",
+  "enable_cache": true,
+  "cache_dir": "/Users/berton/.qlib/cache/tushare",
+  "cache_ttl": 86400,
+  "max_cache_size": 1073741824,
+  "max_retries": 5,
+  "retry_delay": 1.0,
+  "retry_backoff": 2.0,
+  "timeout": 30.0,
+  "rate_limit": 180,
+  "rate_limit_window": 60,
+  "batch_size": 5000,
+  "default_fields": [
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "amount"
+  ],
+  "log_level": "INFO",
+  "enable_api_logging": false,
+  "validate_data": true,
+  "remove_holidays": true,
+  "adjust_price": true
+}

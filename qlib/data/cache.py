@@ -591,18 +591,46 @@ class DiskExpressionCache(ExpressionCache):
 
         if self.check_cache_exists(cache_path, suffix_list=[".meta"]):
             """
-            In most cases, we do not need reader_lock.
-            Because updating data is a small probability event compare to reading data.
-
+            改进的缓存读取机制：使用文件锁来避免多进程冲突
+            优先使用读锁，冲突时降级到无锁模式
             """
-            # FIXME: Removing the reader lock may result in conflicts.
-            # with CacheUtils.reader_lock(self.r, 'expression-%s' % _cache_uri):
-
-            # modify expression cache meta file
+            # 改进的多进程安全缓存访问
             try:
-                # FIXME: Multiple readers may result in error visit number
+                # 首先尝试带锁访问
                 if not self.remote:
-                    CacheUtils.visit(cache_path)
+                    # 使用文件锁确保多进程安全
+                    import fcntl
+                    import time
+
+                    meta_path = cache_path.with_suffix(".meta")
+                    lock_path = meta_path.with_suffix(".lock")
+
+                    # 创建锁文件
+                    try:
+                        with open(lock_path, 'w') as lock_file:
+                            # 尝试获取共享锁（读锁），非阻塞
+                            fcntl.flock(lock_file.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+                            CacheUtils.visit(cache_path)
+                            lock_file.close()
+                    except (IOError, OSError):
+                        # 锁获取失败，短暂等待后重试
+                        time.sleep(0.001)  # 1ms
+                        try:
+                            with open(lock_path, 'w') as lock_file:
+                                fcntl.flock(lock_file.fileno(), fcntl.LOCK_SH)
+                                CacheUtils.visit(cache_path)
+                                lock_file.close()
+                        except (IOError, OSError):
+                            # 多次失败后跳过访问计数更新，避免阻塞
+                            pass
+                    finally:
+                        # 清理锁文件
+                        if lock_path.exists():
+                            try:
+                                lock_path.unlink()
+                            except OSError:
+                                pass
+
                 series = read_bin(cache_path, start_index, end_index)
                 return series
             except Exception:

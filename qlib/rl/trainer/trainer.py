@@ -237,8 +237,15 @@ class Trainer:
             # Add a feature that supports reloading the training environment every few iterations.
             with _wrap_context(vessel.train_seed_iterator()) as iterator:
                 vector_env = self.venv_from_iterator(iterator)
-                self.vessel.train(vector_env)
-                del vector_env  # FIXME: Explicitly delete this object to avoid memory leak.
+                try:
+                    self.vessel.train(vector_env)
+                finally:
+                    # 确保资源被正确释放，避免内存泄漏
+                    if hasattr(vector_env, 'close'):
+                        vector_env.close()
+                    del vector_env
+                    import gc
+                    gc.collect()  # 强制垃圾回收
 
             self._call_callback_hooks("on_train_end")
 
