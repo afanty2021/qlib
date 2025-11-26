@@ -59,7 +59,7 @@ class LGBModel(ModelFT, LightGBMFInt):
                     w = reweighter.reweight(df)
                 else:
                     raise ValueError("Unsupported reweighter type.")
-                ds_l.append((lgb.Dataset(x.values, label=y, weight=w), key))
+                ds_l.append((lgb.Dataset(x.values, label=y, weight=w, free_raw_data=False), key))
         return ds_l
 
     def fit(
@@ -129,8 +129,10 @@ class LGBModel(ModelFT, LightGBMFInt):
             verbose level
         """
         # Based on existing model and finetune by train more rounds
-        dtrain, _ = self._prepare_data(dataset, reweighter)  # pylint: disable=W0632
-        if dtrain.empty:
+        ds_l = self._prepare_data(dataset, reweighter)
+        dtrain, _ = ds_l[0]
+
+        if dtrain.construct().num_data() == 0:
             raise ValueError(
                 "Empty data from dataset, please check your dataset config."
             )
