@@ -50,3 +50,7 @@ tags
 ./pretrain
 .idea/
 .aider*
+
+# Claude Flow and Swarm system files
+.claude-flow/
+.swarm/
