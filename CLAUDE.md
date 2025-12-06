@@ -35,6 +35,7 @@ graph TD
     H --> H2["缓存系统"];
     H --> H3["操作符系统"];
     H --> H4["PIT数据库"];
+    H --> H5["TuShare集成"];
 
     I --> I1["基础模型接口"];
     I --> I2["PyTorch 模型"];
@@ -89,6 +90,8 @@ graph TD
     click L6 "./qlib/contrib/evaluate/CLAUDE.md" "查看评估分析"
     click L7 "./qlib/contrib/ops/CLAUDE.md" "查看操作符扩展"
     click M "./qlib/utils/CLAUDE.md" "查看通用工具库"
+    click DT "./get_market_data.py" "查看市场数据获取工具"
+    click ANA "./using_downloaded_data.py" "查看数据分析示例"
 ```
 
 ## 模块索引
@@ -102,7 +105,7 @@ graph TD
 | `qlib/contrib/report/` | 报告分析 | 风险分析、可视化、图表生成 | ⭐ **重点** | 📊 **详细** |
 | `qlib/contrib/online/` | 在线服务 | 实时预测、用户管理、模型部署 | ⭐ **重点** | 📊 **详细** |
 | `qlib/contrib/evaluate/` | 评估分析 | 风险指标、绩效评估、多空回测 | ⭐ **重点** | 📊 **详细** |
-| `qlib/contrib/data/` | 数据扩展 | 高频处理、内存优化、Arctic集成 | ⭐ **重点** | 📊 **详细** |
+| `qlib/contrib/data/` | 数据扩展 | 高频处理、内存优化、Arctic集成、TuShare集成 | ⭐ **重点** | 📊 **详细** |
 | `qlib/contrib/ops/` | 操作符扩展 | 高频操作符、时间序列分析 | ⭐ **重点** | 📊 **详细** |
 | `qlib/utils/` | 通用工具库 | 数据处理、时间工具、配置管理 | ⭐ **重点** | 📊 **详细** |
 | `qlib/contrib/` | 扩展模块 | 模型、策略、数据分析 | ✅ 活跃 | 📊 详细 |
@@ -152,14 +155,19 @@ graph TD
 - **操作系统**：Linux/macOS/Windows
 - **内存**：建议 8GB+（大数据集需要更多）
 - **GPU**：可选，深度学习模型训练加速
+- **数据库**：可选，MongoDB（用于Arctic数据集成）
 
 ### 快速开始
 ```bash
 # 安装 Qlib
 pip install pyqlib
 
-# 初始化环境
+# 初始化环境（使用默认数据源）
 python -c "import qlib; qlib.init()"
+
+# 使用TuShare数据源（需要Token）
+export TUSHARE_TOKEN="your_token_here"
+python -c "import qlib; qlib.init(provider_uri='tushare')"
 
 # 运行示例
 cd examples
@@ -175,6 +183,9 @@ cd qlib
 # 安装开发依赖
 pip install -e ".[dev]"
 
+# 安装TuShare支持（可选）
+pip install tushare
+
 # 运行测试
 pytest tests/
 ```
@@ -184,15 +195,68 @@ pytest tests/
 # 构建镜像
 docker build -t qlib:latest .
 
-# 运行容器
+# 运行容器（包含TuShare支持）
 docker run -it --rm \
     -v $(pwd)/data:/qlib/data \
     -p 8888:8888 \
+    -e TUSHARE_TOKEN="your_token_here" \
     qlib:latest
 
 # 使用 Docker Compose
 docker-compose up -d
 ```
+
+## 新增功能亮点（2025-12-03更新）
+
+### 🇨🇳 TuShare数据集成
+- **完整的A股数据支持**：沪深300、上证指数等全市场数据
+- **企业级稳定性**：多层缓存、自动重试、错误处理
+- **统一接口**：与Qlib原生数据接口完全兼容
+- **灵活配置**：支持环境变量、配置文件、代码配置
+
+**快速使用**：
+```python
+from qlib import init
+from qlib.data import D
+
+# 使用TuShare数据源
+init(provider_uri='tushare', region='cn')
+
+# 获取A股数据
+instruments = D.instruments('csi300')
+features = D.features(instruments, ['close', 'volume'],
+                      start_time='2020-01-01', end_time='2024-12-31')
+```
+
+### 📊 市场数据分析工具
+- **自动数据获取脚本**：`get_market_data.py` - 一键获取市场数据
+- **完整数据示例**：上证指数近5年数据，沪深300成分股数据
+- **标准化格式**：自动转换为Qlib可用格式
+- **可视化分析**：包含完整的分析报告和图表
+
+**使用示例**：
+```bash
+# 获取市场数据
+python get_market_data.py
+
+# 使用下载的数据进行分析
+python using_downloaded_data.py
+
+# 查看数据总结
+cat data_download_summary.md
+```
+
+### 🚀 高性能数据处理
+- **Arctic数据库集成**：基于MongoDB的高性能时序数据库
+- **内存优化数据集**：支持大规模时序数据的高效处理
+- **高频数据处理**：分钟级、秒级数据的专用处理器
+- **多频率数据融合**：日线+分钟线数据的智能融合
+
+### 🔧 数据收集器框架
+- **模块化设计**：支持自定义数据源扩展
+- **多源数据支持**：Yahoo Finance、TuShare、基金数据等
+- **自动化工具**：`scripts/data_collector/` 完整的数据收集工具链
+- **质量控制**：完善的数据验证和清洗机制
 
 ## 测试策略
 
@@ -293,6 +357,25 @@ docker-compose up -d
 - **弹性扩展**：支持动态扩缩容
 
 ## 变更记录 (Changelog)
+
+### 2025-12-03 09:50:00 - Git同步与上下文更新
+- ✨ **Git仓库同步**：
+  - 成功同步上游microsoft/qlib仓库最新更新
+  - 解决合并冲突：gbdt.py、us_index数据收集器、依赖文件
+  - 推送更新到个人origin仓库
+- 📊 **TuShare数据集成**：
+  - 完整的A股数据源集成模块（qlib/contrib/data/tushare/）
+  - 企业级稳定性：多层缓存、自动重试、错误处理
+  - 与Qlib原生接口完全兼容的统一数据访问
+- 🛠️ **市场数据分析工具**：
+  - 新增get_market_data.py：自动化市场数据获取脚本
+  - 新增using_downloaded_data.py：数据分析和可视化示例
+  - 完整的数据下载总结和使用指南
+- 📝 **上下文文档更新**：
+  - 更新运行环境要求，新增MongoDB和TuShare支持
+  - 补充TuShare数据源快速开始指南
+  - 新增数据分析工具使用示例
+  - 更新模块架构图以反映新功能
 
 ### 2025-11-17 14:15:47 - 第六次增量更新（最终完善版）
 - ✨ **新增部署运维完整指南**：
