@@ -57,3 +57,6 @@ tags
 
 # Spec workflow templates
 .spec-workflow/
+
+# Chinese analysis documents
+*量化*
