@@ -1,0 +1,349 @@
+{
+    "Analysis Overview": {
+        "Report Title": "Qlib Deep Learning Models Comparison Analysis",
+        "Generation Time": "2025-11-30 13:09:51",
+        "Models Analyzed": 7,
+        "Analysis Dimensions": [
+            "Technical feature comparison",
+            "Performance metric evaluation",
+            "Resource requirement analysis",
+            "Application scenario analysis",
+            "Implementation guidance"
+        ]
+    },
+    "Model Categories": {
+        "Recurrent Neural Networks": [
+            "LSTM",
+            "GRU"
+        ],
+        "Attention-based Models": [
+            "ALSTM",
+            "Transformer"
+        ],
+        "Temporal Convolutional Networks": [
+            "TCN"
+        ],
+        "Graph Neural Networks": [
+            "GATs"
+        ],
+        "Hierarchical Models": [
+            "HIST"
+        ]
+    },
+    "Performance Ranking": {
+        "1st Place": "TCN",
+        "2nd Place": "Transformer",
+        "3rd Place": "HIST",
+        "4th Place": "ALSTM",
+        "5th Place": "GRU",
+        "6th Place": "LSTM",
+        "7th Place": "GATs"
+    },
+    "Model Detailed Analysis": {
+        "ALSTM": {
+            "Technical Features": [
+                "LSTM + Attention",
+                "Time-weighted",
+                "Feature weighting",
+                "Dual mechanism"
+            ],
+            "Performance Metrics": {
+                "Performance Score": 8.5,
+                "Parameter Count": "Medium-High",
+                "Computational Complexity": "O(T×H² + T²)",
+                "Training Speed": "Medium",
+                "Inference Speed": "Medium"
+            },
+            "Application Scenarios": [
+                "Financial time series prediction",
+                "Important time point detection",
+                "Feature importance analysis"
+            ],
+            "Pros and Cons": {
+                "Advantages": [
+                    "Attention mechanism enhanced",
+                    "Strong interpretability",
+                    "Excellent time series modeling"
+                ],
+                "Disadvantages": [
+                    "High computational complexity",
+                    "Relatively large parameter count"
+                ]
+            },
+            "Recommended Parameters": {
+                "d_feat": 20,
+                "hidden_size": 64,
+                "num_layers": 2,
+                "dropout": 0.0
+            }
+        },
+        "Transformer": {
+            "Technical Features": [
+                "Self-attention",
+                "Multi-head attention",
+                "Position encoding",
+                "Parallel computation"
+            ],
+            "Performance Metrics": {
+                "Performance Score": 8.2,
+                "Parameter Count": "High",
+                "Computational Complexity": "O(T²×H)",
+                "Training Speed": "Medium",
+                "Inference Speed": "Medium"
+            },
+            "Application Scenarios": [
+                "Long sequence modeling",
+                "Parallel computing needs",
+                "Global dependency capture"
+            ],
+            "Pros and Cons": {
+                "Advantages": [
+                    "Strong parallelization capability",
+                    "Long-distance dependency modeling",
+                    "Global information capture"
+                ],
+                "Disadvantages": [
+                    "High computational complexity",
+                    "Large parameter count",
+                    "Requires large amount of data"
+                ]
+            },
+            "Recommended Parameters": {
+                "d_model": 64,
+                "nhead": 8,
+                "num_layers": 2,
+                "dropout": 0.1
+            }
+        },
+        "LSTM": {
+            "Technical Features": [
+                "Long short-term memory",
+                "Gate control mechanism",
+                "Gradient vanishing mitigation",
+                "Sequence modeling"
+            ],
+            "Performance Metrics": {
+                "Performance Score": 7.5,
+                "Parameter Count": "Medium",
+                "Computational Complexity": "O(T×H²)",
+                "Training Speed": "Medium",
+                "Inference Speed": "Medium"
+            },
+            "Application Scenarios": [
+                "Time series prediction",
+                "Sequence modeling",
+                "Financial time series data"
+            ],
+            "Pros and Cons": {
+                "Advantages": [
+                    "Mature and stable",
+                    "Solid theoretical foundation",
+                    "Strong sequence modeling capability"
+                ],
+                "Disadvantages": [
+                    "Difficult long sequence processing",
+                    "Limited parallelization capability",
+                    "Relatively low computational efficiency"
+                ]
+            },
+            "Recommended Parameters": {
+                "hidden_size": 64,
+                "num_layers": 2,
+                "dropout": 0.0
+            }
+        },
+        "TCN": {
+            "Technical Features": [
+                "Temporal convolution",
+                "Dilated convolution",
+                "Causal convolution",
+                "Residual connection"
+            ],
+            "Performance Metrics": {
+                "Performance Score": 8.0,
+                "Parameter Count": "Medium",
+                "Computational Complexity": "O(T×H)",
+                "Training Speed": "Fast",
+                "Inference Speed": "Fast"
+            },
+            "Application Scenarios": [
+                "Long sequence prediction",
+                "Real-time prediction",
+                "Parallel processing needs"
+            ],
+            "Pros and Cons": {
+                "Advantages": [
+                    "Strong parallelization capability",
+                    "Exponentially growing receptive field",
+                    "Fast training and inference"
+                ],
+                "Disadvantages": [
+                    "Lack of explicit time series modeling",
+                    "Insensitive to positional information"
+                ]
+            },
+            "Recommended Parameters": {
+                "num_channels": 64,
+                "num_layers": 5,
+                "kernel_size": 7,
+                "dropout": 0.5
+            }
+        },
+        "GATs": {
+            "Technical Features": [
+                "Graph attention",
+                "Node relationship modeling",
+                "Edge weight learning",
+                "Multi-asset correlation"
+            ],
+            "Performance Metrics": {
+                "Performance Score": 7.0,
+                "Parameter Count": "High",
+                "Computational Complexity": "O(N²×H)",
+                "Training Speed": "Slow",
+                "Inference Speed": "Medium"
+            },
+            "Application Scenarios": [
+                "Multi-asset portfolio",
+                "Cross-asset correlation analysis",
+                "Multi-asset relationship modeling"
+            ],
+            "Pros and Cons": {
+                "Advantages": [
+                    "Strong relationship modeling capability",
+                    "Excellent interpretability",
+                    "Suitable for multi-asset scenarios"
+                ],
+                "Disadvantages": [
+                    "High computational complexity",
+                    "Requires pre-defined graph structure",
+                    "Limited scalability"
+                ]
+            },
+            "Recommended Parameters": {
+                "hidden_dim": 64,
+                "num_heads": 8,
+                "num_layers": 2,
+                "dropout": 0.1
+            }
+        },
+        "HIST": {
+            "Technical Features": [
+                "Hierarchical structure",
+                "Multi-scale features",
+                "Information fusion",
+                "Hierarchical learning"
+            ],
+            "Performance Metrics": {
+                "Performance Score": 8.3,
+                "Parameter Count": "High",
+                "Computational Complexity": "O(T×H²)",
+                "Training Speed": "Medium",
+                "Inference Speed": "Medium"
+            },
+            "Application Scenarios": [
+                "Multi-time scale modeling",
+                "Complex pattern recognition",
+                "Long-term prediction"
+            ],
+            "Pros and Cons": {
+                "Advantages": [
+                    "Multi-scale feature extraction",
+                    "Long-term dependency modeling",
+                    "Information fusion mechanism"
+                ],
+                "Disadvantages": [
+                    "High model complexity",
+                    "Difficult training",
+                    "Complex parameter optimization"
+                ]
+            },
+            "Recommended Parameters": {
+                "hidden_size": 64,
+                "num_levels": 3,
+                "dropout": 0.1
+            }
+        },
+        "GRU": {
+            "Technical Features": [
+                "Gate control unit",
+                "Fewer parameters",
+                "High computational efficiency",
+                "Simplified LSTM"
+            ],
+            "Performance Metrics": {
+                "Performance Score": 7.8,
+                "Parameter Count": "Medium-Low",
+                "Computational Complexity": "O(T×H²)",
+                "Training Speed": "Fast",
+                "Inference Speed": "Fast"
+            },
+            "Application Scenarios": [
+                "Time series prediction",
+                "Resource-constrained environments",
+                "Rapid prototype development"
+            ],
+            "Pros and Cons": {
+                "Advantages": [
+                    "High parameter efficiency",
+                    "Fast training speed",
+                    "Low overfitting risk"
+                ],
+                "Disadvantages": [
+                    "Relatively weak expression capability compared to LSTM",
+                    "Still challenges in long sequence processing"
+                ]
+            },
+            "Recommended Parameters": {
+                "hidden_size": 64,
+                "num_layers": 2,
+                "dropout": 0.0
+            }
+        }
+    },
+    "Application Scenario Recommendations": {
+        "Time Series Prediction": [
+            "ALSTM",
+            "HIST",
+            "TCN"
+        ],
+        "Real-time Prediction": [
+            "GRU",
+            "TCN"
+        ],
+        "Multi-asset Analysis": [
+            "GATs",
+            "Transformer"
+        ],
+        "Long Sequence Modeling": [
+            "TCN",
+            "HIST"
+        ],
+        "High Interpretability": [
+            "GATs",
+            "ALSTM"
+        ],
+        "Resource Constrained": [
+            "GRU",
+            "TCN"
+        ]
+    },
+    "Technology Trends": {
+        "Attention Mechanisms": "Evolution from RNN to Transformer, continuous efficiency improvement",
+        "Long Sequence Processing": "Linear complexity models becoming mainstream",
+        "Multi-modal Fusion": "Combining multiple data sources for better prediction",
+        "Automated ML": "AutoML technology in model selection and tuning",
+        "Edge Computing": "Lightweight models for edge deployment"
+    },
+    "Implementation Recommendations": {
+        "Model Selection": "Choose appropriate model based on specific scenario and data characteristics",
+        "Parameter Tuning": "Systematic hyperparameter search and validation",
+        "Performance Optimization": "Optimize for deployment environment",
+        "Continuous Monitoring": "Establish model performance monitoring and update mechanisms"
+    },
+    "Generated Files": {
+        "Model Comparison Chart": "dl_models_analysis/model_comparison_chart.png",
+        "Technical Analysis Chart": "dl_models_analysis/technical_analysis.png",
+        "Selection Guide": "dl_models_analysis/selection_guide.png"
+    }
+}

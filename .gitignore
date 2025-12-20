@@ -54,3 +54,9 @@ tags
 # Claude Flow and Swarm system files
 .claude-flow/
 .swarm/
+
+# Spec workflow templates
+.spec-workflow/
+
+# Chinese analysis documents
+*量化*

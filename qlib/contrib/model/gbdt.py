@@ -133,9 +133,7 @@ class LGBModel(ModelFT, LightGBMFInt):
         dtrain, _ = ds_l[0]
 
         if dtrain.construct().num_data() == 0:
-            raise ValueError(
-                "Empty data from dataset, please check your dataset config."
-            )
+            raise ValueError("Empty data from dataset, please check your dataset config.")
         verbose_eval_callback = lgb.log_evaluation(period=verbose_eval)
         self.model = lgb.train(
             self.params,

@@ -234,7 +234,6 @@ class SP500Index(WIKIIndex):
         response = requests.get(self.WIKISP500_CHANGES_URL, headers=headers, timeout=None)
         response.raise_for_status()
         changes_df = pd.read_html(StringIO(response.text))[-1]
-
         changes_df = changes_df.iloc[:, [0, 1, 3]]
         changes_df.columns = [self.DATE_FIELD_NAME, self.ADD, self.REMOVE]
         changes_df[self.DATE_FIELD_NAME] = pd.to_datetime(changes_df[self.DATE_FIELD_NAME])
