@@ -161,19 +161,35 @@ class TuShareAPIClient:
         Returns:
             处理后的TuShare HTTP API请求体
         """
+        import numpy as np
+
+        def convert_to_native(obj):
+            """将 numpy 类型转换为 Python 原生类型"""
+            if isinstance(obj, np.integer):
+                return int(obj)
+            elif isinstance(obj, np.floating):
+                return float(obj)
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            else:
+                return obj
+
+        # 转换参数中的 numpy 类型
+        cleaned_params = {}
+        for k, v in params.items():
+            if v is not None:
+                cleaned_params[k] = convert_to_native(v)
+
         # 构建TuShare标准请求格式
         request_body = {
             "api_name": api_name,
             "token": self.config.token,
-            "params": params
+            "params": cleaned_params
         }
 
         # 添加fields参数（如果提供）
         if fields:
             request_body["fields"] = fields
-
-        # 移除params中的None值
-        request_body["params"] = {k: v for k, v in params.items() if v is not None}
 
         return request_body
 
@@ -357,7 +373,8 @@ class TuShareAPIClient:
         self,
         exchange: str = None,
         list_status: str = "L",
-        fields: str = None
+        fields: str = None,
+        raw_columns: bool = False
     ) -> pd.DataFrame:
         """
         获取股票基本信息
@@ -366,6 +383,7 @@ class TuShareAPIClient:
             exchange: 交易所代码
             list_status: 上市状态 (L: 上市, D: 退市, P: 暂停)
             fields: 字段列表
+            raw_columns: 是否使用原始列名（False 则映射为 Qlib 标准列名）
 
         Returns:
             股票基本信息DataFrame
@@ -391,8 +409,9 @@ class TuShareAPIClient:
                     # 兼容其他可能的格式
                     df = pd.DataFrame(data)
 
-                # 字段映射和类型转换
-                df = TuShareFieldMapping.map_dataframe_columns(df)
+                # 字段映射和类型转换（可选）
+                if not raw_columns:
+                    df = TuShareFieldMapping.map_dataframe_columns(df)
                 df = TuShareFieldMapping.convert_data_types(df)
 
                 return df

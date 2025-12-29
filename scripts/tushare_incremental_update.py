@@ -146,14 +146,19 @@ class IncrementalDataUpdater:
             return None
 
         try:
-            # 读取CSV文件获取最新日期
-            df = pd.read_csv(file_path, nrows=1)
+            # 获取文件总行数
+            with open(file_path, 'r') as f:
+                total_rows = sum(1 for _ in f) - 1  # 减去表头
+
+            # 读取最后一行数据（最新日期）
+            # skiprows 参数：跳过前 total_rows - 1 行，只读取最后一行
+            df = pd.read_csv(file_path, skiprows=range(1, total_rows))
 
             # 根据数据类型确定日期列
             date_columns = {
-                "stock": ["trade_date", "date", "tradedate"],
-                "index": ["trade_date", "date", "tradedate"],
-                "index_weight": ["trade_date", "date", "tradedate"]
+                "stock": ["tradedate", "trade_date", "date"],
+                "index": ["date", "trade_date", "tradedate"],
+                "index_weight": ["tradedate", "trade_date", "date"]
             }
 
             for col in date_columns.get(data_type, []):
@@ -213,7 +218,8 @@ class IncrementalDataUpdater:
             self.logger.info("获取股票列表...")
             stock_basic = self.client.get_stock_basic(
                 exchange="",
-                list_status="L"
+                list_status="L",
+                raw_columns=True  # 使用原始列名
             )
 
             if stock_basic.empty:
@@ -351,7 +357,7 @@ class IncrementalDataUpdater:
                 self.logger.info(f"更新指数 {index_code}")
 
                 try:
-                    # 获取指数数据
+                    # 获取指数数据（使用原始列名）
                     data = self.client.get_index_daily(
                         ts_code=index_code,
                         start_date=start_date,
@@ -359,14 +365,9 @@ class IncrementalDataUpdater:
                     )
 
                     if not data.empty:
-                        # 字段映射
-                        df = data.rename(columns={
-                            "ts_code": "symbol",
-                            "trade_date": "tradedate"
-                        })
-
-                        all_data.append(df)
-                        self.stats["indices_updated"] += len(df)
+                        # 保留原始列名，不进行映射（与现有 index_data.csv 格式一致）
+                        all_data.append(data)
+                        self.stats["indices_updated"] += len(data)
 
                     # 避免频率限制
                     time.sleep(0.3)
@@ -385,12 +386,24 @@ class IncrementalDataUpdater:
                 # 如果存在旧数据，合并后去重
                 if output_file.exists():
                     old_df = pd.read_csv(output_file)
-                    combined_df = pd.concat([old_df, combined_df])
-                    combined_df = combined_df.drop_duplicates(
-                        subset=["tradedate", "symbol"],
-                        keep="last"
-                    )
-                    combined_df = combined_df.sort_values(["tradedate", "symbol"])
+
+                    # 检查旧数据的列名
+                    if "instrument" in old_df.columns and "date" in old_df.columns:
+                        # 旧数据使用 instrument/date 列名
+                        combined_df = pd.concat([old_df, combined_df])
+                        combined_df = combined_df.drop_duplicates(
+                            subset=["date", "instrument"],
+                            keep="last"
+                        )
+                        combined_df = combined_df.sort_values(["date", "instrument"])
+                    elif "symbol" in old_df.columns and "tradedate" in old_df.columns:
+                        # 旧数据使用 symbol/tradedate 列名
+                        combined_df = pd.concat([old_df, combined_df])
+                        combined_df = combined_df.drop_duplicates(
+                            subset=["tradedate", "symbol"],
+                            keep="last"
+                        )
+                        combined_df = combined_df.sort_values(["tradedate", "symbol"])
 
                 combined_df.to_csv(output_file, index=False)
                 self.logger.info(f"✅ 指数数据已保存到 {output_file}")
@@ -447,7 +460,7 @@ class IncrementalDataUpdater:
                 try:
                     # 获取指数基本信息
                     if not start_date:
-                        stock_basic = self.client.get_stock_basic()
+                        stock_basic = self.client.get_stock_basic(raw_columns=True)  # 使用原始列名
                         index_info = stock_basic[stock_basic["ts_code"] == index_code]
                         if not index_info.empty:
                             list_date = index_info["list_date"].iloc[0]
@@ -520,12 +533,31 @@ class IncrementalDataUpdater:
                 # 如果存在旧数据，合并后去重
                 if output_file.exists():
                     old_df = pd.read_csv(output_file)
-                    combined_df = pd.concat([old_df, combined_df])
-                    combined_df = combined_df.drop_duplicates(
-                        subset=["tradedate", "symbol", "stock_code"],
-                        keep="last"
-                    )
-                    combined_df = combined_df.sort_values(["tradedate", "symbol", "stock_code"])
+
+                    # 检测旧数据的列名格式
+                    if "tradedate" in old_df.columns and "symbol" in old_df.columns and "stock_code" in old_df.columns:
+                        # 旧数据使用 tradedate/symbol/stock_code 列名
+                        combined_df = pd.concat([old_df, combined_df])
+                        combined_df = combined_df.drop_duplicates(
+                            subset=["tradedate", "symbol", "stock_code"],
+                            keep="last"
+                        )
+                        combined_df = combined_df.sort_values(["tradedate", "symbol", "stock_code"])
+                    else:
+                        # 旧数据可能使用其他列名，先统一新数据列名
+                        # 保留原始数据，直接合并
+                        combined_df = pd.concat([old_df, combined_df], ignore_index=True)
+                        # 尝试自动检测去重列
+                        date_cols = [col for col in combined_df.columns if 'date' in col.lower()]
+                        symbol_cols = [col for col in combined_df.columns if 'symbol' in col.lower() or 'index' in col.lower()]
+                        stock_cols = [col for col in combined_df.columns if 'code' in col.lower() or 'con' in col.lower()]
+
+                        if date_cols and symbol_cols and stock_cols:
+                            combined_df = combined_df.drop_duplicates(
+                                subset=[date_cols[0], symbol_cols[0], stock_cols[0]],
+                                keep="last"
+                            )
+                            combined_df = combined_df.sort_values([date_cols[0], symbol_cols[0], stock_cols[0]])
 
                 combined_df.to_csv(output_file, index=False)
                 self.logger.info(f"✅ 指数权重数据已保存到 {output_file}")
@@ -557,9 +589,16 @@ class IncrementalDataUpdater:
         if stock_file.exists():
             try:
                 df = pd.read_csv(stock_file)
+                # 自动检测日期和代码列名
+                date_col = next((col for col in ['tradedate', 'trade_date', 'date'] if col in df.columns), None)
+                symbol_col = next((col for col in ['symbol', 'instrument', 'ts_code'] if col in df.columns), None)
+
                 self.logger.info(f"股票数据: {len(df)} 条记录")
-                self.logger.info(f"  日期范围: {df['tradedate'].min()} -> {df['tradedate'].max()}")
-                self.logger.info(f"  股票数量: {df['symbol'].nunique()}")
+                if date_col and symbol_col:
+                    self.logger.info(f"  日期范围: {df[date_col].min()} -> {df[date_col].max()}")
+                    self.logger.info(f"  股票数量: {df[symbol_col].nunique()}")
+                else:
+                    self.logger.warning("  无法检测到日期或代码列名")
             except Exception as e:
                 self.logger.error(f"股票数据验证失败: {e}")
                 validation_passed = False
@@ -569,9 +608,16 @@ class IncrementalDataUpdater:
         if index_file.exists():
             try:
                 df = pd.read_csv(index_file)
+                # 自动检测日期和代码列名
+                date_col = next((col for col in ['date', 'trade_date', 'tradedate'] if col in df.columns), None)
+                symbol_col = next((col for col in ['instrument', 'symbol', 'ts_code'] if col in df.columns), None)
+
                 self.logger.info(f"指数数据: {len(df)} 条记录")
-                self.logger.info(f"  日期范围: {df['tradedate'].min()} -> {df['tradedate'].max()}")
-                self.logger.info(f"  指数数量: {df['symbol'].nunique()}")
+                if date_col and symbol_col:
+                    self.logger.info(f"  日期范围: {df[date_col].min()} -> {df[date_col].max()}")
+                    self.logger.info(f"  指数数量: {df[symbol_col].nunique()}")
+                else:
+                    self.logger.warning("  无法检测到日期或代码列名")
             except Exception as e:
                 self.logger.error(f"指数数据验证失败: {e}")
                 validation_passed = False
@@ -581,9 +627,16 @@ class IncrementalDataUpdater:
         if weight_file.exists():
             try:
                 df = pd.read_csv(weight_file)
+                # 自动检测日期和代码列名
+                date_col = next((col for col in ['tradedate', 'trade_date', 'date'] if col in df.columns), None)
+                symbol_col = next((col for col in ['symbol', 'instrument', 'index_code'] if col in df.columns), None)
+
                 self.logger.info(f"指数权重数据: {len(df)} 条记录")
-                self.logger.info(f"  日期范围: {df['tradedate'].min()} -> {df['tradedate'].max()}")
-                self.logger.info(f"  指数数量: {df['symbol'].nunique()}")
+                if date_col and symbol_col:
+                    self.logger.info(f"  日期范围: {df[date_col].min()} -> {df[date_col].max()}")
+                    self.logger.info(f"  指数数量: {df[symbol_col].nunique()}")
+                else:
+                    self.logger.warning("  无法检测到日期或代码列名")
             except Exception as e:
                 self.logger.error(f"指数权重数据验证失败: {e}")
                 validation_passed = False
