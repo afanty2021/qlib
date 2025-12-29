@@ -200,16 +200,6 @@ class Model(BaseModel):
             - 考虑内存使用和计算效率
         """
         pass  # 子类应该重写此方法
-                    w_train = pd.DataFrame(np.ones_like(y_train.values), index=y_train.index)
-                    w_valid = pd.DataFrame(np.ones_like(y_valid.values), index=y_valid.index)
-
-        Parameters
-        ----------
-        dataset : Dataset
-            dataset will generate the processed data from model training.
-
-        """
-        raise NotImplementedError()
 
     @abc.abstractmethod
     def predict(self, dataset: Dataset, segment: Union[Text, slice] = "test") -> object:
