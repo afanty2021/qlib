@@ -141,32 +141,50 @@ class TuShareAPIClient:
 
         return session
 
-    def _prepare_request_params(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    def _prepare_request_params(self, api_name: str, params: Dict[str, Any], fields: str = None) -> Dict[str, Any]:
         """
-        准备请求参数
+        准备请求参数（TuShare HTTP API格式）
+
+        TuShare HTTP API请求格式：
+        {
+            "api_name": "接口名称",
+            "token": "用户Token",
+            "params": {"参数名": "参数值"},
+            "fields": "字段列表（可选）"
+        }
 
         Args:
-            params: 原始参数
+            api_name: API接口名称
+            params: 接口参数（将放入params字段）
+            fields: 字段列表（可选）
 
         Returns:
-            处理后的参数
+            处理后的TuShare HTTP API请求体
         """
-        # 添加Token
-        prepared_params = params.copy()
-        prepared_params["token"] = self.config.token
+        # 构建TuShare标准请求格式
+        request_body = {
+            "api_name": api_name,
+            "token": self.config.token,
+            "params": params
+        }
 
-        # 移除None值
-        prepared_params = {k: v for k, v in prepared_params.items() if v is not None}
+        # 添加fields参数（如果提供）
+        if fields:
+            request_body["fields"] = fields
 
-        return prepared_params
+        # 移除params中的None值
+        request_body["params"] = {k: v for k, v in params.items() if v is not None}
 
-    def _make_request(self, api_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        return request_body
+
+    def _make_request(self, api_name: str, params: Dict[str, Any], fields: str = None) -> Dict[str, Any]:
         """
-        发送API请求
+        发送API请求（TuShare HTTP API格式）
 
         Args:
-            api_name: API名称
-            params: 请求参数
+            api_name: API接口名称（如'stock_basic', 'daily'等）
+            params: 接口参数（将放入params字段）
+            fields: 字段列表（可选，将作为顶级字段）
 
         Returns:
             API响应数据
@@ -179,18 +197,18 @@ class TuShareAPIClient:
         if wait_time > 0 and self.config.enable_api_logging:
             print(f"[TuShare] 频率限制等待 {wait_time:.2f} 秒")
 
-        # 准备请求参数
-        request_params = self._prepare_request_params(params)
+        # 准备TuShare标准请求格式
+        request_body = self._prepare_request_params(api_name, params, fields)
 
-        # 构建请求URL
-        url = f"{self.config.api_url}/{api_name}"
+        # 使用基础URL（不包含接口名路径）
+        url = self.config.api_url
 
         try:
             if self.config.enable_api_logging:
-                print(f"[TuShare] 请求: {api_name}, 参数: {request_params}")
+                print(f"[TuShare] 请求: {api_name}, URL: {url}, 参数: {request_body}")
 
-            # 发送请求
-            response = self.session.post(url, json=request_params)
+            # 发送POST请求到基础URL
+            response = self.session.post(url, json=request_body)
             response.raise_for_status()
 
             # 解析响应
@@ -202,7 +220,7 @@ class TuShareAPIClient:
                     f"API返回错误: {data.get('msg', '未知错误')}",
                     status_code=response.status_code,
                     api_method=api_name,
-                    request_params=request_params,
+                    request_params=request_body,
                     details={"response_code": data.get("code")}
                 )
 
@@ -218,14 +236,14 @@ class TuShareAPIClient:
             raise TuShareAPIError(
                 f"网络请求失败: {str(e)}",
                 api_method=api_name,
-                request_params=request_params,
+                request_params=request_body,
                 cause=e
             )
         except Exception as e:
             raise TuShareAPIError(
                 f"API调用失败: {str(e)}",
                 api_method=api_name,
-                request_params=request_params,
+                request_params=request_body,
                 cause=e
             )
 
@@ -263,7 +281,13 @@ class TuShareAPIClient:
         data = self._make_request("daily", params)
 
         if data:
-            df = pd.DataFrame(data)
+            # TuShare API返回格式: {'fields': [...], 'items': [[...], [...]]}
+            if isinstance(data, dict) and 'fields' in data and 'items' in data:
+                # 使用fields作为列名，items作为数据行
+                df = pd.DataFrame(data['items'], columns=data['fields'])
+            else:
+                # 兼容其他可能的格式
+                df = pd.DataFrame(data)
 
             # 字段映射和类型转换
             df = TuShareFieldMapping.map_dataframe_columns(df)
@@ -310,7 +334,13 @@ class TuShareAPIClient:
         data = self._make_request("trade_cal", params)
 
         if data:
-            df = pd.DataFrame(data)
+            # TuShare API返回格式: {'fields': [...], 'items': [[...], [...]]}
+            if isinstance(data, dict) and 'fields' in data and 'items' in data:
+                # 使用fields作为列名，items作为数据行
+                df = pd.DataFrame(data['items'], columns=data['fields'])
+            else:
+                # 兼容其他可能的格式
+                df = pd.DataFrame(data)
 
             # 字段映射和类型转换
             df = TuShareFieldMapping.convert_data_types(df)
@@ -340,25 +370,45 @@ class TuShareAPIClient:
         Returns:
             股票基本信息DataFrame
         """
+        # params参数（将放入请求体的params字段）
         params = {
             "list_status": list_status,
         }
 
         if exchange:
             params["exchange"] = exchange
-        if fields:
-            params["fields"] = fields
 
-        data = self._make_request("stock_basic", params)
+        # fields作为顶级参数传递
+        data = self._make_request("stock_basic", params, fields=fields)
 
         if data:
-            df = pd.DataFrame(data)
+            try:
+                # TuShare API返回格式: {'fields': [...], 'items': [[...], [...]]}
+                if isinstance(data, dict) and 'fields' in data and 'items' in data:
+                    # 使用fields作为列名，items作为数据行
+                    df = pd.DataFrame(data['items'], columns=data['fields'])
+                else:
+                    # 兼容其他可能的格式
+                    df = pd.DataFrame(data)
 
-            # 字段映射和类型转换
-            df = TuShareFieldMapping.map_dataframe_columns(df)
-            df = TuShareFieldMapping.convert_data_types(df)
+                # 字段映射和类型转换
+                df = TuShareFieldMapping.map_dataframe_columns(df)
+                df = TuShareFieldMapping.convert_data_types(df)
 
-            return df
+                return df
+            except Exception as e:
+                # 输出详细的调试信息
+                print(f"⚠️ 处理stock_basic数据时出错: {e}")
+                print(f"   原始数据类型: {type(data)}")
+                if isinstance(data, dict):
+                    print(f"   数据键: {list(data.keys())}")
+                    if 'fields' in data:
+                        print(f"   字段: {data['fields']}")
+                    if 'items' in data:
+                        print(f"   数据项数量: {len(data['items'])}")
+                        if data['items']:
+                            print(f"   第一行: {data['items'][0]}")
+                raise
         else:
             return pd.DataFrame()
 
@@ -395,7 +445,13 @@ class TuShareAPIClient:
         data = self._make_request("daily_basic", params)
 
         if data:
-            df = pd.DataFrame(data)
+            # TuShare API返回格式: {'fields': [...], 'items': [[...], [...]]}
+            if isinstance(data, dict) and 'fields' in data and 'items' in data:
+                # 使用fields作为列名，items作为数据行
+                df = pd.DataFrame(data['items'], columns=data['fields'])
+            else:
+                # 兼容其他可能的格式
+                df = pd.DataFrame(data)
 
             # 字段映射和类型转换
             df = TuShareFieldMapping.map_dataframe_columns(df)
@@ -438,7 +494,13 @@ class TuShareAPIClient:
         data = self._make_request("index_daily", params)
 
         if data:
-            df = pd.DataFrame(data)
+            # TuShare API返回格式: {'fields': [...], 'items': [[...], [...]]}
+            if isinstance(data, dict) and 'fields' in data and 'items' in data:
+                # 使用fields作为列名，items作为数据行
+                df = pd.DataFrame(data['items'], columns=data['fields'])
+            else:
+                # 兼容其他可能的格式
+                df = pd.DataFrame(data)
 
             # 字段映射和类型转换
             df = TuShareFieldMapping.map_dataframe_columns(df)
@@ -477,10 +539,222 @@ class TuShareAPIClient:
         data = self._make_request("index_weight", params)
 
         if data:
-            df = pd.DataFrame(data)
+            # TuShare API返回格式: {'fields': [...], 'items': [[...], [...]]}
+            if isinstance(data, dict) and 'fields' in data and 'items' in data:
+                # 使用fields作为列名，items作为数据行
+                df = pd.DataFrame(data['items'], columns=data['fields'])
+            else:
+                # 兼容其他可能的格式
+                df = pd.DataFrame(data)
 
             # 字段映射和类型转换
             df = TuShareFieldMapping.map_dataframe_columns(df)
+            df = TuShareFieldMapping.convert_data_types(df)
+
+            return df
+        else:
+            return pd.DataFrame()
+
+    def get_industry(
+        self,
+        src: str = "SW2021",
+        level: str = "L1",
+        fields: str = None
+    ) -> pd.DataFrame:
+        """
+        获取行业分类数据
+
+        Args:
+            src: 行业分类来源
+                  - SW2021: 申万2021行业分类
+                  - SW: 申万行业分类（旧版）
+                  - ZJH: 证监会行业分类
+                  - CITIC: 中信行业分类
+            level: 行业级别
+                   - L1: 一级行业
+                   - L2: 二级行业
+                   - L3: 三级行业
+            fields: 字段列表（可选）
+
+        Returns:
+            行业分类数据DataFrame，包含字段：
+            - industry_code: 行业代码
+            - industry_name: 行业名称
+            - level: 行业级别
+            - is_parent: 是否为父类
+        """
+        params = {
+            "src": src,
+            "level": level
+        }
+
+        data = self._make_request("industry", params, fields=fields)
+
+        if data:
+            # TuShare API返回格式: {'fields': [...], 'items': [[...], [...]]}
+            if isinstance(data, dict) and 'fields' in data and 'items' in data:
+                df = pd.DataFrame(data['items'], columns=data['fields'])
+            else:
+                df = pd.DataFrame(data)
+
+            # 字段映射和类型转换
+            df = TuShareFieldMapping.convert_data_types(df)
+
+            return df
+        else:
+            return pd.DataFrame()
+
+    def get_concept(
+        self,
+        id: str = None,
+        fields: str = None
+    ) -> pd.DataFrame:
+        """
+        获取概念板块分类数据
+
+        Args:
+            id: 概念板块ID（可选）
+            fields: 字段列表（可选）
+
+        Returns:
+            概念板块数据DataFrame，包含字段：
+            - id: 概念ID
+            - concept_name: 概念名称
+            - concept_type: 概念类型
+        """
+        params = {}
+
+        if id:
+            params["id"] = id
+
+        data = self._make_request("concept", params, fields=fields)
+
+        if data:
+            # TuShare API返回格式: {'fields': [...], 'items': [[...], [...]]}
+            if isinstance(data, dict) and 'fields' in data and 'items' in data:
+                df = pd.DataFrame(data['items'], columns=data['fields'])
+            else:
+                df = pd.DataFrame(data)
+
+            # 字段映射和类型转换
+            df = TuShareFieldMapping.convert_data_types(df)
+
+            return df
+        else:
+            return pd.DataFrame()
+
+    def get_index_member(
+        self,
+        index_code: str = None,
+        fields: str = None
+    ) -> pd.DataFrame:
+        """
+        获取指数成分股数据
+
+        Args:
+            index_code: 指数代码（如 000300.SH 沪深300）
+            fields: 字段列表（可选）
+
+        Returns:
+            指数成分股数据DataFrame，包含字段：
+            - index_code: 指数代码
+            - con_code: 成分股代码
+            - in_date: 纳入日期
+            - out_date: 剔除日期
+            - is_new: 是否为新成分股
+        """
+        params = {}
+
+        if index_code:
+            params["index_code"] = index_code
+
+        data = self._make_request("index_member", params, fields=fields)
+
+        if data:
+            # TuShare API返回格式: {'fields': [...], 'items': [[...], [...]]}
+            if isinstance(data, dict) and 'fields' in data and 'items' in data:
+                df = pd.DataFrame(data['items'], columns=data['fields'])
+            else:
+                df = pd.DataFrame(data)
+
+            # 字段映射和类型转换
+            df = TuShareFieldMapping.convert_data_types(df)
+
+            return df
+        else:
+            return pd.DataFrame()
+
+    def get_index_classify(
+        self,
+        level: str = "L1",
+        src: str = "SW2021",
+        fields: str = None
+    ) -> pd.DataFrame:
+        """
+        获取指数行业分类数据
+
+        Args:
+            level: 行业级别 (L1: 一级, L2: 二级, L3: 三级)
+            src: 行业分类来源 (SW2021, ZJH, CITIC)
+            fields: 字段列表（可选）
+
+        Returns:
+            指数行业分类DataFrame，包含：
+            - index_code: 指数代码
+            - industry_code: 行业代码
+            - industry_name: 行业名称
+        """
+        params = {
+            "level": level,
+            "src": src
+        }
+
+        data = self._make_request("index_classify", params, fields=fields)
+
+        if data:
+            # TuShare API返回格式: {'fields': [...], 'items': [[...], [...]]}
+            if isinstance(data, dict) and 'fields' in data and 'items' in data:
+                df = pd.DataFrame(data['items'], columns=data['fields'])
+            else:
+                df = pd.DataFrame(data)
+
+            # 字段映射和类型转换
+            df = TuShareFieldMapping.convert_data_types(df)
+
+            return df
+        else:
+            return pd.DataFrame()
+
+    def get_industry_detail(
+        self,
+        industry_code: str = None,
+        fields: str = None
+    ) -> pd.DataFrame:
+        """
+        获取行业板块详细信息
+
+        Args:
+            industry_code: 行业代码（可选）
+            fields: 字段列表（可选）
+
+        Returns:
+            行业详细信息DataFrame
+        """
+        params = {}
+
+        if industry_code:
+            params["industry_code"] = industry_code
+
+        data = self._make_request("industry_detail", params, fields=fields)
+
+        if data:
+            # TuShare API返回格式: {'fields': [...], 'items': [[...], [...]]}
+            if isinstance(data, dict) and 'fields' in data and 'items' in data:
+                df = pd.DataFrame(data['items'], columns=data['fields'])
+            else:
+                df = pd.DataFrame(data)
+
+            # 字段映射和类型转换
             df = TuShareFieldMapping.convert_data_types(df)
 
             return df

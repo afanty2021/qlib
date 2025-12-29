@@ -41,7 +41,7 @@ class TuShareConfig:
 
     # TuShare API配置
     token: Optional[str] = None
-    api_url: str = "http://api.tushare.pro"
+    api_url: str = "https://api.tushare.pro"
 
     # 缓存配置
     enable_cache: bool = True
