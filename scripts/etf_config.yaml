@@ -1,0 +1,76 @@
+# ETF数据自动更新配置文件
+#
+# 说明：此文件用于配置ETF数据自动更新的行为
+#
+
+# ETF列表配置
+etf_list:
+  # 宽基指数ETF
+  - 510300.SH  # 沪深300ETF
+  - 510500.SH  # 中证500ETF
+  - 510050.SH  # 上证50ETF
+  - 159915.SZ  # 深证300ETF
+  - 159919.SZ  # 沪深300ETF（深）
+  - 159901.SZ  # 深100ETF
+  - 159949.SZ  # 创业板50ETF
+  - 159934.SZ  # 创业板ETF
+  - 512100.SH  # 中证1000ETF
+  - 159338.SZ  # 中证A500ETF
+  - 563600.SH  # A500增强ETF易方达  
+  - 512890.SH  # 红利低波ETF
+  - 159201.SZ  # 自由现金流ETF  
+  - 588000.SH  # 科创50ETF
+
+  # 行业ETF
+  - 512000.SH  # 券商ETF
+  - 512480.SH  # 计算机ETF
+  - 512690.SH  # 酒ETF
+  - 515050.SH  # 5GETF
+  - 515880.SH  # 通信ETF
+  - 516160.SH  # 新能源车ETF
+  - 159745.SZ  # 芯片ETF
+  - 159869.SZ  # 有色金属ETF
+  - 159865.SZ  # 新能源车ETF
+  - 512170.SH  # 医疗ETF
+  - 512010.SH  # 医药ETF
+  - 159870.SZ  # 化工ETF
+  - 159864.SZ  # 光伏50ETF
+  - 159770.SZ  # 机器人ETF
+  - 563230.SH  # 卫星ETF
+  - 159869.SZ  # 游戏ETF
+  - 159227.SZ  # 航空航天ETF
+  - 159516.SZ  # 半导体设备ETF
+
+  # 海外ETF
+  - 513180.SH  # 恒生科技指数ETF
+  - 513330.SH  # 恒生互联网ETF
+  - 159941.SZ  # 纳指ETF
+  - 513500.SH  # 标普500ETF
+  - 513050.SH  # 中概互联网ETF
+  - 513750.SH  # 港股通非银ETF
+  - 513120.SH  # 港股创新药ETF
+  - 159691.SZ  # 港股红利ETF
+  - 159545.SZ  # 恒生红利低波ETF
+  - 513920.SH  # 港股通央企红利指数ETF
+  - 513310.SH  # 中韩半导体ETF
+  - 513880.SH  # 日经225ETF  
+  - 159561.SZ  # 德国ETF
+
+  # 商品ETF
+  - 518880.SH  # 黄金ETF
+
+
+
+# 下载配置
+download_interval: 0.2  # 下载间隔（秒），避免请求过快
+max_retries: 3          # 最大重试次数
+
+# 转换配置
+convert_to_qlib: true   # 是否自动转换为Qlib格式
+
+# 通知配置（暂未实现）
+enable_notification: false
+
+# 日志级别
+# 可选值: DEBUG, INFO, WARNING, ERROR
+log_level: INFO
