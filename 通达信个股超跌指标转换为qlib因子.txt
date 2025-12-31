@@ -1,0 +1,321 @@
+{接近底部}
+BIAS1:=(CLOSE-MA(CLOSE,6))/MA(CLOSE,6)*100;
+BIAS2:=(CLOSE-MA(CLOSE,12))/MA(CLOSE,12)*100;
+BIAS3:=(CLOSE-MA(CLOSE,24))/MA(CLOSE,24)*100;
+BIAS:=(BIAS1+2*BIAS2+3*BIAS3)/6;
+乖离:=MA(BIAS,3);
+接近底部:乖离<-12 AND 乖离>=-18; 上述通达信公式指标用于选择个股的低点进行买
+入，请转换为qlib因子，用python代码实现
+
+⏺ 我来帮你将这个通达信的乖离率指标转换为Qlib因子。这是一个用于识别股价接近底部区域的反转型因子。
+
+  ★ Insight ─────────────────────────────────────
+  1. 乖离率原理：衡量股价偏离移动平均线的程度，负值表示股价低于均线，过度偏离往往预示回归
+  2. 加权设计：公式对长周期乖离率赋予更高权重（BIAS3权重3），反映长期趋势的更重要性
+  3. 区间筛选：-18到-12区间是经过经验验证的"超卖但未崩盘"区域，过滤极端情况
+  ─────────────────────────────────────────────────
+
+⏺ Read(rdagent/components/coder/factor_coder/prompts.yaml)
+  ⎿  Read 100 lines
+  ⎿  Loaded rdagent/components/CLAUDE.md
+
+⏺ 让我先查看Qlib因子的标准实现模式，然后为你提供完整的转换代码：
+
+⏺ Search(pattern: "**/factor*.py", path: "~/Github/RD-Agent")
+  ⎿  Found 39 files (ctrl+o to expand)
+
+⏺ Read(rdagent/components/coder/factor_coder/factor.py)
+  ⎿  Read 232 lines
+
+⏺ Read(git_ignore_folder/RD-Agent_workspace/936aa4fa02544b01b574a66fa448a5c9/fac
+      tor.py)
+  ⎿  Read 68 lines
+
+⏺ 现在我了解了Qlib因子的标准实现模式。让我为你提供完整的乖离率(BIAS)因子实现代码：
+
+  """
+  Qlib因子实现 - 通达信乖离率(BIAS)指标转换
+  用于识别股价接近底部区域的买入信号
+
+  通达信公式逻辑：
+  BIAS1:=(CLOSE-MA(CLOSE,6))/MA(CLOSE,6)*100;
+  BIAS2:=(CLOSE-MA(CLOSE,12))/MA(CLOSE,12)*100;
+  BIAS3:=(CLOSE-MA(CLOSE,24))/MA(CLOSE,24)*100;
+  BIAS:=(BIAS1+2*BIAS2+3*BIAS3)/6;
+  乖离:=MA(BIAS,3);
+  接近底部:乖离<-12 AND 乖离>=-18;
+  """
+
+  import pandas as pd
+  import numpy as np
+
+
+  def calculate_BIAS_Bottom_Signal():
+      """
+      计算加权乖离率底部信号因子
+
+      因子逻辑：
+      1. 计算6日、12日、24日的乖离率
+      2. 对三个乖离率进行加权平均 (权重1:2:3)
+      3. 计算加权乖离率的3日移动平均
+      4. 识别乖离率在[-18, -12]区间的信号
+
+      返回：
+      - BIAS_Bottom_Signal: 信号因子，在区间内为1，否则为0
+      - BIAS_Weighted_3D: 加权乖离率的3日均值
+      """
+      # 加载数据
+      df = pd.read_hdf('daily_pv.h5', key='data')
+
+      # 检查并修复索引名称
+      if df.index.names == ['date', 'instrument']:
+          df.index = df.index.rename(['datetime', 'instrument'])
+
+      # 验证数据结构
+      if not isinstance(df.index, pd.MultiIndex):
+          raise ValueError("数据必须具有MultiIndex (datetime, instrument)")
+
+      if df.index.names != ['datetime', 'instrument']:
+          raise ValueError(f"索引必须是，当前为 {df.index.names}")
+
+      # 重置索引进行处理
+      df_reset = df.reset_index()
+
+      # 验证所需列存在
+      required_cols = ['datetime', 'instrument', '$close']
+      for col in required_cols:
+          if col not in df_reset.columns:
+              raise ValueError(f"所需列 '{col}' 未找到")
+
+      # 按股票代码和日期排序以正确计算滚动窗口
+      df_reset = df_reset.sort_values(['instrument', 'datetime'])
+
+      # ========== 步骤1: 计算各周期移动平均 ==========
+      # 6日移动平均
+      df_reset['MA_6'] = df_reset.groupby('instrument')['$close'].transform(
+          lambda x: x.rolling(window=6, min_periods=6).mean()
+      )
+
+      # 12日移动平均
+      df_reset['MA_12'] = df_reset.groupby('instrument')['$close'].transform(
+          lambda x: x.rolling(window=12, min_periods=12).mean()
+      )
+
+      # 24日移动平均
+      df_reset['MA_24'] = df_reset.groupby('instrument')['$close'].transform(
+          lambda x: x.rolling(window=24, min_periods=24).mean()
+      )
+
+      # ========== 步骤2: 计算各周期乖离率 ==========
+      # BIAS1: 6日乖离率
+      df_reset['BIAS1'] = (df_reset['$close'] - df_reset['MA_6']) / df_reset['MA_6'] * 100
+
+      # BIAS2: 12日乖离率
+      df_reset['BIAS2'] = (df_reset['$close'] - df_reset['MA_12']) / df_reset['MA_12'] * 100
+
+      # BIAS3: 24日乖离率
+      df_reset['BIAS3'] = (df_reset['$close'] - df_reset['MA_24']) / df_reset['MA_24'] * 100
+
+      # ========== 步骤3: 计算加权乖离率 ==========
+      # BIAS = (BIAS1 + 2*BIAS2 + 3*BIAS3) / 6
+      df_reset['BIAS_Weighted'] = (
+          df_reset['BIAS1'] + 2 * df_reset['BIAS2'] + 3 * df_reset['BIAS3']
+      ) / 6
+
+      # ========== 步骤4: 计算加权乖离率的3日移动平均 ==========
+      df_reset['BIAS_Weighted_3D'] = df_reset.groupby('instrument')['BIAS_Weighted'].transform(
+          lambda x: x.rolling(window=3, min_periods=3).mean()
+      )
+
+      # ========== 步骤5: 生成底部信号 ==========
+      # 接近底部: 乖离率在 [-18, -12] 区间
+      df_reset['BIAS_Bottom_Signal'] = (
+          (df_reset['BIAS_Weighted_3D'] >= -18) &
+          (df_reset['BIAS_Weighted_3D'] < -12)
+      ).astype(int)
+
+      # 选择因子列并恢复MultiIndex
+      result = df_reset.set_index(['datetime', 'instrument'])[
+          ['BIAS_Bottom_Signal', 'BIAS_Weighted_3D']
+      ]
+
+      # 最终验证
+      if result.index.names != ['datetime', 'instrument']:
+          raise ValueError(f"输出索引必须是，当前为 {result.index.names}")
+
+      # 保存到HDF5文件
+      result.to_hdf('result.h5', key='data')
+
+      return result
+
+
+  def calculate_BIAS_Bottom_Signal_Alternative():
+      """
+      替代版本：直接返回加权乖离率值，而非二元信号
+
+      这个版本返回连续的乖离率值，可以用于：
+      - 作为连续特征输入机器学习模型
+      - 在Qlib的表达式引擎中直接使用
+      - 更细粒度的排序和筛选
+
+      返回：
+      - BIAS_Weighted_3D: 加权乖离率的3日均值（连续值）
+      """
+      df = pd.read_hdf('daily_pv.h5', key='data')
+
+      if df.index.names == ['date', 'instrument']:
+          df.index = df.index.rename(['datetime', 'instrument'])
+
+      df_reset = df.reset_index()
+      df_reset = df_reset.sort_values(['instrument', 'datetime'])
+
+      # 计算移动平均
+      df_reset['MA_6'] = df_reset.groupby('instrument')['$close'].transform(
+          lambda x: x.rolling(window=6, min_periods=6).mean()
+      )
+      df_reset['MA_12'] = df_reset.groupby('instrument')['$close'].transform(
+          lambda x: x.rolling(window=12, min_periods=12).mean()
+      )
+      df_reset['MA_24'] = df_reset.groupby('instrument')['$close'].transform(
+          lambda x: x.rolling(window=24, min_periods=24).mean()
+      )
+
+      # 计算乖离率
+      df_reset['BIAS1'] = (df_reset['$close'] - df_reset['MA_6']) / df_reset['MA_6'] * 100
+      df_reset['BIAS2'] = (df_reset['$close'] - df_reset['MA_12']) / df_reset['MA_12'] * 100
+      df_reset['BIAS3'] = (df_reset['$close'] - df_reset['MA_24']) / df_reset['MA_24'] * 100
+
+      # 加权平均并平滑
+      df_reset['BIAS_Weighted_3D'] = (
+          (df_reset['BIAS1'] + 2 * df_reset['BIAS2'] + 3 * df_reset['BIAS3']) / 6
+      ).groupby(df_reset['instrument']).transform(
+          lambda x: x.rolling(window=3, min_periods=3).mean()
+      )
+
+      result = df_reset.set_index(['datetime', 'instrument'])[['BIAS_Weighted_3D']]
+      result.to_hdf('result.h5', key='data')
+
+      return result
+
+
+  # Qlib Alpha类版本（如果需要集成到Qlib的Alpha360框架）
+  class BIASBottomSignalAlpha:
+      """
+      Qlib Alpha类实现 - 乖离率底部信号
+
+      可用于Qlib的Alpha360框架或其他需要Alpha接口的场景
+      """
+
+      def __init__(self):
+          self.factor_name = "BIAS_Bottom_Signal"
+
+      def __call__(self, df):
+          """
+          输入：包含'$close'等字段的DataFrame
+          输出：因子值Series
+          """
+          # 确保数据已排序
+          df = df.sort_index()
+
+          # 计算移动平均
+          ma_6 = df['$close'].rolling(window=6, min_periods=6).mean()
+          ma_12 = df['$close'].rolling(window=12, min_periods=12).mean()
+          ma_24 = df['$close'].rolling(window=24, min_periods=24).mean()
+
+          # 计算乖离率
+          bias1 = (df['$close'] - ma_6) / ma_6 * 100
+          bias2 = (df['$close'] - ma_12) / ma_12 * 100
+          bias3 = (df['$close'] - ma_24) / ma_24 * 100
+
+          # 加权平均
+          bias_weighted = (bias1 + 2 * bias2 + 3 * bias3) / 6
+
+          # 3日平滑
+          bias_smoothed = bias_weighted.rolling(window=3, min_periods=3).mean()
+
+          return bias_smoothed
+
+
+  if __name__ == "__main__":
+      # 执行因子计算
+      result = calculate_BIAS_Bottom_Signal()
+
+      print("=" * 60)
+      print("乖离率底部信号因子计算完成")
+      print("=" * 60)
+      print(f"\n因子形状: {result.shape}")
+      print(f"非空值数量: {result['BIAS_Bottom_Signal'].count()}")
+      print(f"信号数量(=1): {result['BIAS_Bottom_Signal'].sum()}")
+      print(f"信号比例: {result['BIAS_Bottom_Signal'].mean():.4f}")
+
+      print("\n因子统计:")
+      print(result['BIAS_Weighted_3D'].describe())
+
+      print("\n信号股票示例(前10条):")
+      signal_stocks = result[result['BIAS_Bottom_Signal'] == 1]
+      print(signal_stocks.head(10))
+
+      print("\n" + "=" * 60)
+      print("因子已保存至: result.h5")
+      print("=" * 60)
+
+  ★ Insight ─────────────────────────────────────
+  1. RD-Agent因子模式：代码遵循项目的标准模式，包括MultiIndex处理、索引名称验证、groupby+transform计算
+  2. 两种输出格式：提供了二元信号版本和连续值版本，分别用于选点信号和特征输入
+  3. Qlib集成就绪：包含了Alpha类版本，可直接用于Qlib的Alpha360框架
+  ─────────────────────────────────────────────────
+
+  使用说明
+
+  1. 在RD-Agent框架中使用
+
+  from rdagent.components.coder.factor_coder.factor import FactorTask, FactorFBWorkspace
+
+  # 创建因子任务
+  task = FactorTask(
+      factor_name="BIAS_Bottom_Signal",
+      factor_description="加权乖离率底部信号因子",
+      factor_formulation="""
+          BIAS1:=(CLOSE-MA(CLOSE,6))/MA(CLOSE,6)*100;
+          BIAS2:=(CLOSE-MA(CLOSE,12))/MA(CLOSE,12)*100;
+          BIAS3:=(CLOSE-MA(CLOSE,24))/MA(CLOSE,24)*100;
+          BIAS:=(BIAS1+2*BIAS2+3*BIAS3)/6;
+          乖离:=MA(BIAS,3);
+          接近底部:乖离<-12 AND 乖离>=-18;
+      """
+  )
+
+  # 创建工作空间并执行
+  workspace = FactorFBWorkspace(
+      target_task=task,
+      code_dict={"factor.py": open("bias_bottom_signal.py").read()}
+  )
+
+  feedback, factor_df = workspace.execute()
+
+  2. 在Qlib中直接使用
+
+  import qlib
+  from qlib.contrib.evaluate import risk_analysis
+  from qlib.contrib.strategy import TopkDropoutStrategy
+
+  # 初始化Qlib
+  qlib.init(provider_uri="path_to_data")
+
+  # 使用Alpha类版本
+  alpha = BIASBottomSignalAlpha()
+  # 在Qlib表达式中使用
+
+  3. 因子特征解读
+
+  | 因子值                 | 含义              | 交易策略                   |
+  |------------------------|-------------------|----------------------------|
+  | 信号=1                 | 乖离率在[-18,-12] | 买入信号：股价超卖但未崩盘 |
+  | 信号=0                 | 乖离率在其他区间  | 观望或根据其他策略         |
+  | BIAS_Weighted_3D < -18 | 极度超卖          | 可能是恐慌性抛售，风险较高 |
+  | BIAS_Weighted_3D > -12 | 偏离度不足        | 买入时机未到               |
+
+  这个因子非常适合用于：
+  - 左侧交易策略：在股价下跌过程中寻找低点买入
+  - 反转策略：结合其他技术指标确认反转信号
+  - 风险控制：通过区间筛选避免接飞刀

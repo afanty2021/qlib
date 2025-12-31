@@ -1,0 +1,709 @@
+好的，让我基于Qlib的标准Alpha类结构为你创建完整的因子实现。我将提供两个版本：标准Qlib Alpha类版本和RD-Agent兼容版本。
+
+  """
+  Qlib因子实现 - 确认反弹信号
+  Standard Qlib Alpha Implementation
+
+  通达信公式转换：
+  VAR20:=REF((LOW+OPEN+CLOSE+HIGH)/4,1);
+  VAR21:=SMA(ABS(LOW-VAR20),13,1)/SMA(MAX(LOW-VAR20,0),10,1);
+  VAR22:=EMA(VAR21,10);
+  VAR23:=LLV(LOW,33);
+  VAR24:=EMA(IF(LOW<=VAR23,VAR22,0),3);
+  主力进场:=IF(VAR24>REF(VAR24,1),VAR24,0);
+  洗盘:=IF(VAR24<REF(VAR24,1),VAR24,0);
+  BIAS5:=(CLOSE-MA(CLOSE,13))/MA(CLOSE,13)*100;
+  YXG2:=REF(局部底部,1);
+  YXG3:=REF(主力进场,1)>1;
+  买入信号: YXG2 AND YXG3 AND 洗盘>1
+  """
+
+  import numpy as np
+  import pandas as pd
+  from typing import Union
+
+
+  # =============================================================================
+  # 版本1: 标准Qlib Alpha类实现
+  # =============================================================================
+
+  class ConfirmReboundAlpha:
+      """
+      Qlib Alpha因子 - 确认反弹信号
+
+      因子逻辑：
+      1. 主力资金流向分析 (基于价格波动率)
+      2. 洗盘阶段识别 (主力进场后的回调)
+      3. 乖离率超卖判断
+      4. 局部底部确认
+
+      使用方法：
+      >>> import qlib
+      >>> from qlib.data import D
+      >>> alpha = ConfirmReboundAlpha()
+      >>> factor = alpha(D.features(instruments, fields, freq='day'))
+      """
+
+      def __init__(self, return_raw_signal: bool = False):
+          """
+          初始化因子
+
+          参数:
+          - return_raw_signal: 是否返回原始信号(True=0/1信号, False=连续值)
+          """
+          self.return_raw_signal = return_raw_signal
+
+      def __call__(self, df: pd.DataFrame) -> pd.Series:
+          """
+          计算因子值
+
+          参数:
+          - df: 输入数据，MultiIndex结构 (datetime, instrument)
+                需要包含字段: $close, $open, $high, $low
+
+          返回:
+          - Series: 因子值，索引与输入df相同
+          """
+          # 确保数据已排序
+          df = df.sort_index()
+
+          # 提取各字段
+          close = df['$close']
+          high = df['$high']
+          low = df['$low']
+          open_ = df['$open']
+
+          # ========== 步骤1: 计算典型价格 ==========
+          typical_price = (high + low + open_ + close) / 4
+
+          # ========== 步骤2: 计算VAR21 - 波动率指标 ==========
+          VAR20 = typical_price.groupby(level=1).shift(1)  # 昨日典型价格
+
+          low_diff = low - VAR20
+          abs_low_diff = low_diff.abs()
+          pos_low_diff = low_diff.clip(lower=0)
+
+          # SMA(ABS(LOW-VAR20), 13, 1) - 使用指数移动平均模拟SMA
+          VAR21_abs = abs_low_diff.groupby(level=1).apply(
+              lambda x: x.ewm(alpha=1/13, adjust=False).mean()
+          )
+
+          # SMA(MAX(LOW-VAR20,0), 10, 1)
+          VAR21_pos = pos_low_diff.groupby(level=1).apply(
+              lambda x: x.ewm(alpha=1/10, adjust=False).mean()
+          )
+
+          VAR21 = VAR21_abs / VAR21_pos.replace(0, np.nan)
+
+          # ========== 步骤3: 计算VAR22和VAR23 ==========
+          VAR22 = VAR21.groupby(level=1).apply(
+              lambda x: x.ewm(span=10, adjust=False).mean()
+          )
+
+          # LLV(LOW, 33) - 33日最低价
+          VAR23 = low.groupby(level=1).transform(
+              lambda x: x.rolling(window=33, min_periods=33).min()
+          )
+
+          # ========== 步骤4: 计算VAR24 - 主力资金指标 ==========
+          condition_low = (low <= VAR23).astype(float)
+          VAR24_raw = VAR22 * condition_low
+          VAR24 = VAR24_raw.groupby(level=1).apply(
+              lambda x: x.ewm(span=3, adjust=False).mean()
+          )
+
+          # ========== 步骤5: 计算主力进场和洗盘 ==========
+          VAR24_prev = VAR24.groupby(level=1).shift(1)
+          主力进场 = ((VAR24 > VAR24_prev).astype(float) * VAR24)
+          洗盘 = ((VAR24 < VAR24_prev).astype(float) * VAR24)
+
+          # ========== 步骤6: 计算BIAS5 - 13日乖离率 ==========
+          MA_13 = close.groupby(level=1).transform(
+              lambda x: x.rolling(window=13, min_periods=13).mean()
+          )
+          BIAS5 = (close - MA_13) / MA_13 * 100
+
+          # ========== 步骤7: 计算局部底部 ==========
+          # 使用滚动窗口识别局部最低点
+          local_min_5 = low.groupby(level=1).transform(
+              lambda x: x.rolling(window=5, center=True, min_periods=3).min()
+          )
+          is_local_min = (
+              (low == local_min_5) &
+              (open_ > low + 0.01)
+          ).astype(float)
+
+          # ========== 步骤8: 计算YXG信号 ==========
+          YXG1 = ((BIAS5 < -2) & (is_local_min > 0)).astype(float)
+          YXG2 = YXG1.groupby(level=1).shift(1)
+          YXG3 = (主力进场.groupby(level=1).shift(1) > 1).astype(float)
+
+          # ========== 步骤9: 最终买入信号 ==========
+          signal = (
+              (YXG2 > 0) &
+              (YXG3 > 0) &
+              (洗盘 > 1)
+          ).astype(float)
+
+          if self.return_raw_signal:
+              return signal
+          else:
+              # 返回主力资金强度作为连续因子
+              return VAR24 * (洗盘 > 1).astype(float)
+
+
+  class ConfirmReboundAlphaV2(ConfirmReboundAlpha):
+      """
+      确认反弹信号 V2 - 简化版本
+
+      核心逻辑：
+      - 主力资金在前期进场
+      - 当前处于洗盘回调阶段
+      - 乖离率显示超卖
+      """
+
+      def __call__(self, df: pd.DataFrame) -> pd.Series:
+          """简化版实现，计算更快速"""
+          df = df.sort_index()
+
+          close = df['$close']
+          low = df['$low']
+
+          # 计算移动平均
+          MA_13 = close.groupby(level=1).transform(
+              lambda x: x.rolling(window=13, min_periods=13).mean()
+          )
+          MA_33 = close.groupby(level=1).transform(
+              lambda x: x.rolling(window=33, min_periods=33).mean()
+          )
+
+          # 乖离率
+          BIAS5 = (close - MA_13) / MA_13 * 100
+
+          # 33日最低价
+          low_33 = low.groupby(level=1).transform(
+              lambda x: x.rolling(window=33, min_periods=33).min()
+          )
+
+          # 价格动量
+          price_momentum_5 = close.groupby(level=1).transform(
+              lambda x: x.pct_change(periods=5)
+          )
+
+          # 主力进场：触及低点后反弹
+          主力进场 = (
+              (low <= low_33) &
+              (price_momentum_5 > 0)
+          ).astype(float)
+
+          # 洗盘：主力进场后的回调
+          主力进场_lag1 = 主力进场.groupby(level=1).shift(1)
+          洗盘 = (
+              (主力进场_lag1 > 0) &
+              (close < MA_13)
+          ).astype(float) * BIAS5.abs()
+
+          # 局部底部
+          local_min = low.groupby(level=1).transform(
+              lambda x: x.rolling(window=5, center=True, min_periods=3).min()
+          )
+          is_bottom = (
+              (low == local_min) &
+              (df['$open'] > low + 0.01)
+          ).astype(float)
+
+          # 组合信号
+          YXG2 = is_bottom.groupby(level=1).shift(1)
+          YXG3 = 主力进场.groupby(level=1).shift(1)
+
+          signal = (
+              (YXG2 > 0) &
+              (YXG3 > 0) &
+              (BIAS5 < -2) &
+              (洗盘 > 1)
+          ).astype(float)
+
+          if self.return_raw_signal:
+              return signal
+          else:
+              return 洗盘 * (signal > 0).astype(float)
+
+
+  class BIASBottomAlpha:
+      """
+      Qlib Alpha因子 - 乖离率底部信号
+
+      之前实现的简单版本，适配Qlib Alpha接口
+      """
+
+      def __init__(self, lower_bound: float = -18, upper_bound: float = -12):
+          """
+          参数:
+          - lower_bound: 下界，默认-18
+          - upper_bound: 上界，默认-12
+          """
+          self.lower_bound = lower_bound
+          self.upper_bound = upper_bound
+
+      def __call__(self, df: pd.DataFrame) -> pd.Series:
+          """
+          计算乖离率底部信号
+
+          逻辑：
+          BIAS1=(CLOSE-MA6)/MA6*100
+          BIAS2=(CLOSE-MA12)/MA12*100
+          BIAS3=(CLOSE-MA24)/MA24*100
+          BIAS=(BIAS1+2*BIAS2+3*BIAS3)/6
+          乖离=MA(BIAS,3)
+          信号: 乖离在[lower_bound, upper_bound)区间
+          """
+          df = df.sort_index()
+          close = df['$close']
+
+          # 计算移动平均
+          MA_6 = close.groupby(level=1).transform(
+              lambda x: x.rolling(window=6, min_periods=6).mean()
+          )
+          MA_12 = close.groupby(level=1).transform(
+              lambda x: x.rolling(window=12, min_periods=12).mean()
+          )
+          MA_24 = close.groupby(level=1).transform(
+              lambda x: x.rolling(window=24, min_periods=24).mean()
+          )
+
+          # 计算乖离率
+          BIAS1 = (close - MA_6) / MA_6 * 100
+          BIAS2 = (close - MA_12) / MA_12 * 100
+          BIAS3 = (close - MA_24) / MA_24 * 100
+
+          # 加权平均
+          BIAS_Weighted = (BIAS1 + 2 * BIAS2 + 3 * BIAS3) / 6
+
+          # 3日平滑
+          BIAS_Weighted_3D = BIAS_Weighted.groupby(level=1).transform(
+              lambda x: x.rolling(window=3, min_periods=3).mean()
+          )
+
+          # 信号
+          signal = (
+              (BIAS_Weighted_3D >= self.lower_bound) &
+              (BIAS_Weighted_3D < self.upper_bound)
+          ).astype(float)
+
+          return BIAS_Weighted_3D
+
+
+  # =============================================================================
+  # 版本2: RD-Agent兼容实现
+  # =============================================================================
+
+  def calculate_Confirm_Rebound_QLib():
+      """
+      RD-Agent兼容版本 - Qlib因子格式
+
+      适用于RD-Agent的CoSTEER框架
+      """
+      import pandas as pd
+      import numpy as np
+
+      df = pd.read_hdf('daily_pv.h5', key='data')
+
+      # 检查并修复索引名称
+      if df.index.names == ['date', 'instrument']:
+          df.index = df.index.rename(['datetime', 'instrument'])
+
+      if not isinstance(df.index, pd.MultiIndex):
+          raise ValueError("数据必须具有MultiIndex (datetime, instrument)")
+
+      if df.index.names != ['datetime', 'instrument']:
+          raise ValueError(f"索引必须是，当前为 {df.index.names}")
+
+      # 确保数据已排序
+      df = df.sort_index()
+
+      # 提取字段
+      close = df['$close']
+      high = df['$high']
+      low = df['$low']
+      open_ = df['$open']
+
+      # ========== 计算因子 ==========
+      # 典型价格
+      typical_price = (high + low + open_ + close) / 4
+      VAR20 = typical_price.groupby(level=1).shift(1)
+
+      # VAR21 - 波动率
+      low_diff = low - VAR20
+      VAR21_abs = low_diff.abs().groupby(level=1).apply(
+          lambda x: x.ewm(alpha=1/13, adjust=False).mean()
+      )
+      VAR21_pos = low_diff.clip(lower=0).groupby(level=1).apply(
+          lambda x: x.ewm(alpha=1/10, adjust=False).mean()
+      )
+      VAR21 = VAR21_abs / VAR21_pos.replace(0, np.nan)
+
+      # VAR22, VAR23, VAR24
+      VAR22 = VAR21.groupby(level=1).apply(
+          lambda x: x.ewm(span=10, adjust=False).mean()
+      )
+      VAR23 = low.groupby(level=1).transform(
+          lambda x: x.rolling(window=33, min_periods=33).min()
+      )
+
+      condition_low = (low <= VAR23).astype(float)
+      VAR24_raw = VAR22 * condition_low
+      VAR24 = VAR24_raw.groupby(level=1).apply(
+          lambda x: x.ewm(span=3, adjust=False).mean()
+      )
+
+      # 主力进场和洗盘
+      VAR24_prev = VAR24.groupby(level=1).shift(1)
+      主力进场 = ((VAR24 > VAR24_prev).astype(float) * VAR24)
+      洗盘 = ((VAR24 < VAR24_prev).astype(float) * VAR24)
+
+      # BIAS5
+      MA_13 = close.groupby(level=1).transform(
+          lambda x: x.rolling(window=13, min_periods=13).mean()
+      )
+      BIAS5 = (close - MA_13) / MA_13 * 100
+
+      # 局部底部
+      local_min_5 = low.groupby(level=1).transform(
+          lambda x: x.rolling(window=5, center=True, min_periods=3).min()
+      )
+      is_local_min = (
+          (low == local_min_5) &
+          (open_ > low + 0.01)
+      ).astype(float)
+
+      # YXG信号
+      YXG1 = ((BIAS5 < -2) & (is_local_min > 0)).astype(float)
+      YXG2 = YXG1.groupby(level=1).shift(1)
+      YXG3 = (主力进场.groupby(level=1).shift(1) > 1).astype(float)
+
+      # 最终信号
+      signal = (
+          (YXG2 > 0) &
+          (YXG3 > 0) &
+          (洗盘 > 1)
+      ).astype(int)
+
+      # 构建结果
+      result = pd.DataFrame({
+          'Confirm_Rebound_Signal': signal,
+          '主力进场': 主力进场,
+          '洗盘': 洗盘,
+          'BIAS5': BIAS5,
+          'VAR24': VAR24
+      }, index=df.index)
+
+      result.to_hdf('result.h5', key='data')
+      return result
+
+
+  def calculate_BIAS_Bottom_QLib():
+      """
+      RD-Agent版本 - BIAS底部信号
+
+      适配Qlib数据格式
+      """
+      import pandas as pd
+      import numpy as np
+
+      df = pd.read_hdf('daily_pv.h5', key='data')
+
+      if df.index.names == ['date', 'instrument']:
+          df.index = df.index.rename(['datetime', 'instrument'])
+
+      df = df.sort_index()
+      close = df['$close']
+
+      # 计算移动平均
+      MA_6 = close.groupby(level=1).transform(
+          lambda x: x.rolling(window=6, min_periods=6).mean()
+      )
+      MA_12 = close.groupby(level=1).transform(
+          lambda x: x.rolling(window=12, min_periods=12).mean()
+      )
+      MA_24 = close.groupby(level=1).transform(
+          lambda x: x.rolling(window=24, min_periods=24).mean()
+      )
+
+      # 乖离率
+      BIAS1 = (close - MA_6) / MA_6 * 100
+      BIAS2 = (close - MA_12) / MA_12 * 100
+      BIAS3 = (close - MA_24) / MA_24 * 100
+      BIAS_Weighted = (BIAS1 + 2 * BIAS2 + 3 * BIAS3) / 6
+      BIAS_Weighted_3D = BIAS_Weighted.groupby(level=1).transform(
+          lambda x: x.rolling(window=3, min_periods=3).mean()
+      )
+
+      # 信号
+      signal = (
+          (BIAS_Weighted_3D >= -18) &
+          (BIAS_Weighted_3D < -12)
+      ).astype(int)
+
+      result = pd.DataFrame({
+          'BIAS_Bottom_Signal': signal,
+          'BIAS_Weighted_3D': BIAS_Weighted_3D
+      }, index=df.index)
+
+      result.to_hdf('result.h5', key='data')
+      return result
+
+
+  # =============================================================================
+  # 使用示例
+  # =============================================================================
+
+  if __name__ == "__main__":
+      print("=" * 70)
+      print("Qlib因子实现 - 确认反弹信号")
+      print("=" * 70)
+
+      # 示例1: 使用Alpha类
+      print("\n【示例1】使用Alpha类接口")
+      print("-" * 70)
+      print("""
+      import qlib
+      from qlib.data import D
+      from confirm_rebound_qlib import ConfirmReboundAlpha
+
+      # 初始化Qlib
+      qlib.init(provider_uri="path_to_data")
+
+      # 创建Alpha实例
+      alpha = ConfirmReboundAlpha(return_raw_signal=True)
+
+      # 获取数据并计算因子
+      instruments = D.instruments()
+      fields = ["$open", "$close", "$high", "$low"]
+      df = D.features(instruments, fields, freq='day')
+      factor = alpha(df)
+
+      print(factor.head())
+      """)
+
+      # 示例2: RD-Agent版本
+      print("\n【示例2】RD-Agent框架使用")
+      print("-" * 70)
+      print("""
+      from rdagent.components.coder.factor_coder.factor import (
+          FactorTask, FactorFBWorkspace
+      )
+      from confirm_rebound_qlib import calculate_Confirm_Rebound_QLib
+
+      # 创建因子任务
+      task = FactorTask(
+          factor_name="Confirm_Rebound_Signal",
+          factor_description="主力洗盘后的确认反弹信号",
+          factor_formulation="""
+              VAR21:=SMA(ABS(LOW-VAR20),13,1)/SMA(MAX(LOW-VAR20,0),10,1);
+              VAR24:=EMA(IF(LOW<=VAR23,VAR22,0),3);
+              主力进场:=IF(VAR24>REF(VAR24,1),VAR24,0);
+              洗盘:=IF(VAR24<REF(VAR24,1),VAR24,0);
+              YXG2:=REF(局部底部,1);
+              YXG3:=REF(主力进场,1)>1;
+              信号: YXG2 AND YXG3 AND 洗盘>1;
+          """
+      )
+
+      # 执行
+      result = calculate_Confirm_Rebound_QLib()
+      print(result.head())
+      """)
+
+      # 示例3: 在Qlib表达式中使用
+      print("\n【示例3】Qlib表达式引擎")
+      print("-" * 70)
+      print("""
+      # 在Qlib的配置文件中使用表达式
+
+      expr_list = [
+          # 主力资金指标
+          "Ref($close, 1) / $close - 1",
+
+          # 乖离率
+          "($close - Mean($close, 13)) / Mean($close, 13) * 100",
+
+          # 波动率
+          "Std($close, 20) / Mean($close, 20)",
+
+          # 自定义Alpha类
+          ConfirmReboundAlpha()
+      ]
+      """)
+
+      print("\n" + "=" * 70)
+      print("实现说明:")
+      print("=" * 70)
+      print("""
+      1. Alpha类接口:
+         - 继承自无，直接实现__call__方法
+         - 输入: MultiIndex DataFrame (datetime, instrument)
+         - 输出: Series，索引与输入相同
+
+      2. 数据格式:
+         - 需要$open, $close, $high, $low字段
+         - MultiIndex必须是(datetime, instrument)
+
+      3. 因子类型:
+         - 信号因子: 0/1二元信号
+         - 强度因子: 连续值，可用于排序和加权
+
+      4. 性能优化:
+         - 使用groupby(level=1)按股票分组计算
+         - 使用transform避免索引对齐问题
+         - 使用rolling和ewm进行高效计算
+      """)
+
+  ★ Insight ─────────────────────────────────────
+  1. Qlib Alpha模式：标准的Qlib Alpha类通过__call__方法接收MultiIndex DataFrame并返回因子Series
+  2. 分组计算优化：使用groupby(level=1)按instrument分组计算，避免循环，提升性能
+  3. 双接口设计：提供Alpha类接口和RD-Agent兼容函数接口，适应不同使用场景
+  ─────────────────────────────────────────────────
+
+  Qlib Alpha类使用指南
+
+  1. 基础使用
+
+  import qlib
+  from qlib.data import D
+  from confirm_rebound_qlib import ConfirmReboundAlpha, BIASBottomAlpha
+
+  # 初始化Qlib
+  qlib.init(provider_uri="~/.qlib/qlib_data/cn_data")
+
+  # 获取数据
+  instruments = D.instruments()
+  fields = ["$open", "$close", "$high", "$low", "$volume"]
+  df = D.features(instruments, fields, freq='day')
+
+  # 创建Alpha实例
+  alpha = ConfirmReboundAlpha(return_raw_signal=True)
+
+  # 计算因子
+  factor = alpha(df)
+
+  # 查看结果
+  print(factor.head())
+  print(f"信号数量: {(factor > 0).sum()}")
+
+  2. 在Qlib工作流中使用
+
+  from qlib.workflow import R
+  from qlib.contrib.evaluate import risk_analysis
+  from qlib.contrib.strategy import TopkDropoutStrategy
+
+  # 配置因子
+  alpha = ConfirmReboundAlpha()
+
+  # 配置策略
+  strategy = TopkDropoutStrategy(
+      topk=50,
+      n_drop=5,
+      signal=factor  # 使用自定义因子
+  )
+
+  # 执行回测
+  portfolio = strategy.execute_predict(df, ret_type='series')
+
+  # 分析结果
+  risk_analysis(portfolio)
+
+  3. 多因子组合
+
+  from confirm_rebound_qlib import (
+      ConfirmReboundAlpha,
+      ConfirmReboundAlphaV2,
+      BIASBottomAlpha
+  )
+
+  # 创建多个Alpha实例
+  alpha1 = ConfirmReboundAlpha(return_raw_signal=True)
+  alpha2 = BIASBottomAlpha(lower_bound=-18, upper_bound=-12)
+  alpha3 = ConfirmReboundAlphaV2(return_raw_signal=False)
+
+  # 计算多个因子
+  factors = pd.DataFrame({
+      'Confirm_Rebound': alpha1(df),
+      'BIAS_Bottom': alpha2(df),
+      'Rebound_Strength': alpha3(df)
+  })
+
+  # 因子组合
+  combined_factor = factors.mean(axis=1)
+
+  # 或使用加权组合
+  weights = {'Confirm_Rebound': 0.5, 'BIAS_Bottom': 0.3, 'Rebound_Strength': 0.2}
+  combined_factor = factors.mul(weights).sum(axis=1)
+
+  4. 在RD-Agent中使用
+
+  from rdagent.components.coder.factor_coder.factor import FactorTask, FactorFBWorkspace
+
+  # 创建任务
+  task = FactorTask(
+      factor_name="Confirm_Rebound_QLib",
+      factor_description="Qlib格式 - 确认反弹信号",
+      factor_formulation="""
+          主力进场:=IF(VAR24>REF(VAR24,1),VAR24,0);
+          洗盘:=IF(VAR24<REF(VAR24,1),VAR24,0);
+          BIAS5:=(CLOSE-MA(CLOSE,13))/MA(CLOSE,13)*100;
+          信号: REF(局部底部,1) AND REF(主力进场,1)>1 AND 洗盘>1;
+      """
+  )
+
+  # 创建工作空间
+  workspace = FactorFBWorkspace(
+      target_task=task,
+      code_dict={"factor.py": open("confirm_rebound_qlib.py").read()}
+  )
+
+  # 执行
+  feedback, factor_df = workspace.execute()
+
+  因子对比表
+
+  | 因子名称              | 类型       | 复杂度 | 信号频率 | 适用场景       |
+  |-----------------------|------------|--------|----------|----------------|
+  | ConfirmReboundAlpha   | 复合       | 高     | 低       | 主力洗盘后拉升 |
+  | ConfirmReboundAlphaV2 | 复合(简化) | 中     | 中       | 快速信号捕捉   |
+  | BIASBottomAlpha       | 单一       | 低     | 高       | 超卖反弹       |
+  | 组合因子              | 组合       | 可变   | 可变     | 多维度验证     |
+
+  性能优化建议
+
+  # 1. 使用缓存机制
+  from functools import lru_cache
+
+  class CachedConfirmReboundAlpha(ConfirmReboundAlpha):
+      @lru_cache(maxsize=128)
+      def __call__(self, df_hash):
+          return super().__call__(df_hash)
+
+  # 2. 批量计算
+  def batch_calculate_factors(df, alpha_list):
+      """批量计算多个因子"""
+      results = {}
+      for name, alpha in alpha_list.items():
+          results[name] = alpha(df)
+      return pd.DataFrame(results)
+
+  # 3. 并行计算
+  from concurrent.futures import ProcessPoolExecutor
+
+  def parallel_calculate(df, instruments, alpha):
+      """并行计算多个股票的因子"""
+      with ProcessPoolExecutor() as executor:
+          futures = []
+          for instrument in instruments:
+              inst_df = df.loc[instrument]
+              futures.append(executor.submit(alpha, inst_df))
+          results = [f.result() for f in futures]
+      return pd.concat(results)
+
+  这样你就有了完整的Qlib Alpha因子实现，可以直接在Qlib框架和RD-Agent中使用！
+  加上一个条件：250天均线趋势上行，效果应该会更好
+  回测优化之

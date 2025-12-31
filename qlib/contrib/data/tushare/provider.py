@@ -473,6 +473,284 @@ class TuShareProvider(BaseProvider):
             logger.error(f"获取数据集失败: {str(e)}")
             return DatasetH(pd.DataFrame(), pd.DataFrame())
 
+    def get_industry_classification(
+        self,
+        src: str = "SW2021",
+        level: str = "L1"
+    ) -> pd.DataFrame:
+        """
+        获取行业分类数据
+
+        Args:
+            src: 行业分类来源 (SW2021, ZJH, CITIC)
+            level: 行业级别 (L1, L2, L3)
+
+        Returns:
+            行业分类DataFrame
+        """
+        try:
+            # 生成缓存键
+            cache_key = self.cache_manager.generate_key("industry", src, level)
+
+            # 尝试从缓存获取
+            cached_data = self.cache_manager.get(cache_key)
+            if cached_data is not None:
+                return cached_data
+
+            # 从API获取行业分类
+            industry_data = self.api_client.get_industry(src=src, level=level)
+
+            if industry_data.empty:
+                logger.warning(f"获取行业分类数据为空: src={src}, level={level}")
+                return pd.DataFrame()
+
+            # 缓存结果
+            self.cache_manager.set(cache_key, industry_data)
+
+            return industry_data
+
+        except Exception as e:
+            logger.error(f"获取行业分类失败: {str(e)}")
+            return pd.DataFrame()
+
+    def get_concept_classification(self, id: str = None) -> pd.DataFrame:
+        """
+        获取概念板块分类数据
+
+        Args:
+            id: 概念板块ID（可选）
+
+        Returns:
+            概念板块分类DataFrame
+        """
+        try:
+            # 生成缓存键
+            cache_key = self.cache_manager.generate_key("concept", id)
+
+            # 尝试从缓存获取
+            cached_data = self.cache_manager.get(cache_key)
+            if cached_data is not None:
+                return cached_data
+
+            # 从API获取概念分类
+            concept_data = self.api_client.get_concept(id=id)
+
+            if concept_data.empty:
+                logger.warning(f"获取概念板块数据为空: id={id}")
+                return pd.DataFrame()
+
+            # 缓存结果
+            self.cache_manager.set(cache_key, concept_data)
+
+            return concept_data
+
+        except Exception as e:
+            logger.error(f"获取概念板块失败: {str(e)}")
+            return pd.DataFrame()
+
+    def get_industry_members(
+        self,
+        index_code: str = None
+    ) -> pd.DataFrame:
+        """
+        获取指数成分股数据
+
+        Args:
+            index_code: 指数代码（如 000300.SH 沪深300）
+
+        Returns:
+            指数成分股DataFrame
+        """
+        try:
+            # 生成缓存键
+            cache_key = self.cache_manager.generate_key("index_member", index_code)
+
+            # 尝试从缓存获取
+            cached_data = self.cache_manager.get(cache_key)
+            if cached_data is not None:
+                return cached_data
+
+            # 从API获取指数成分股
+            member_data = self.api_client.get_index_member(index_code=index_code)
+
+            if member_data.empty:
+                logger.warning(f"获取指数成分股数据为空: index_code={index_code}")
+                return pd.DataFrame()
+
+            # 缓存结果
+            self.cache_manager.set(cache_key, member_data)
+
+            return member_data
+
+        except Exception as e:
+            logger.error(f"获取指数成分股失败: {str(e)}")
+            return pd.DataFrame()
+
+    def get_industry_factors(
+        self,
+        instruments: List[str],
+        factor_type: str = "momentum",
+        start_time=None,
+        end_time=None,
+        **kwargs
+    ) -> pd.DataFrame:
+        """
+        获取行业因子数据
+
+        Args:
+            instruments: 股票代码列表
+            factor_type: 因子类型
+                        - "momentum": 行业动量
+                        - "relative_strength": 行业相对强度
+                        - "concentration": 行业集中度
+                        - "pe_ratio": 行业市盈率
+            start_time: 开始时间
+            end_time: 结束时间
+            **kwargs: 其他因子参数
+
+        Returns:
+            行业因子DataFrame
+        """
+        try:
+            from .industry_factors import IndustryFactorCalculator
+
+            # 获取行业分类数据
+            industry_data = self.get_industry_classification()
+
+            if industry_data.empty:
+                logger.warning("行业分类数据为空，无法计算因子")
+                return pd.DataFrame()
+
+            # 获取价格数据
+            price_df = self.features(
+                instruments=instruments,
+                fields=["close", "volume"],
+                start_time=start_time,
+                end_time=end_time,
+                freq="day"
+            )
+
+            if price_df.empty:
+                logger.warning("价格数据为空，无法计算因子")
+                return pd.DataFrame()
+
+            # 转换为因子计算器需要的格式
+            price_df_reset = price_df.reset_index()
+            price_df_reset.columns = ['instrument', 'date', 'close', 'volume']
+
+            # 初始化因子计算器
+            calculator = IndustryFactorCalculator(
+                industry_data=industry_data,
+                price_data=price_df_reset,
+                industry_classification="SW2021"
+            )
+
+            # 根据因子类型计算
+            if factor_type == "momentum":
+                factor_df = calculator.calculate_industry_momentum(
+                    window=kwargs.get("window", 20),
+                    method=kwargs.get("method", "return")
+                )
+            elif factor_type == "relative_strength":
+                factor_df = calculator.calculate_industry_relative_strength(
+                    benchmark=kwargs.get("benchmark", "market"),
+                    window=kwargs.get("window", 20)
+                )
+            elif factor_type == "concentration":
+                holdings = kwargs.get("holdings")
+                if holdings is None:
+                    raise ValueError("计算集中度因子需要提供holdings参数")
+                factor_df = calculator.calculate_industry_concentration(holdings=holdings)
+            elif factor_type == "pe_ratio":
+                fundamental_data = kwargs.get("fundamental_data")
+                if fundamental_data is None:
+                    raise ValueError("计算PE因子需要提供fundamental_data参数")
+                factor_df = calculator.calculate_industry_pe_ratio(
+                    fundamental_data=fundamental_data,
+                    method=kwargs.get("method", "median")
+                )
+            else:
+                raise ValueError(f"不支持的因子类型: {factor_type}")
+
+            return factor_df
+
+        except Exception as e:
+            logger.error(f"获取行业因子失败: {str(e)}")
+            return pd.DataFrame()
+
+    def features_with_industry(
+        self,
+        instruments: List[str],
+        fields: List[str],
+        start_time=None,
+        end_time=None,
+        freq: str = "day",
+        include_industry: bool = True
+    ) -> pd.DataFrame:
+        """
+        获取包含行业信息的特征数据
+
+        与标准features方法的区别是会自动添加行业分类信息。
+
+        Args:
+            instruments: 股票代码列表
+            fields: 特征字段列表
+            start_time: 开始时间
+            end_time: 结束时间
+            freq: 频率
+            include_industry: 是否包含行业信息
+
+        Returns:
+            特征数据DataFrame（包含行业列）
+        """
+        try:
+            # 获取标准特征数据
+            features_df = self.features(
+                instruments=instruments,
+                fields=fields,
+                start_time=start_time,
+                end_time=end_time,
+                freq=freq
+            )
+
+            if features_df.empty:
+                return features_df
+
+            # 如果不需要行业信息，直接返回
+            if not include_industry:
+                return features_df
+
+            # 获取行业分类
+            industry_data = self.get_industry_classification()
+
+            if industry_data.empty:
+                logger.warning("无法获取行业分类数据")
+                return features_df
+
+            # 映射股票代码
+            industry_map = {}
+            for _, row in industry_data.iterrows():
+                if 'instrument' in row:
+                    qlib_code = row['instrument']
+                    if 'industry_name' in row:
+                        industry_map[qlib_code] = row['industry_name']
+
+            # 添加行业信息
+            features_with_industry = features_df.copy()
+            features_with_industry['industry'] = features_with_industry.index.get_level_values(0).map(industry_map)
+
+            return features_with_industry
+
+        except Exception as e:
+            logger.error(f"获取行业特征数据失败: {str(e)}")
+            return self.features(
+                instruments=instruments,
+                fields=fields,
+                start_time=start_time,
+                end_time=end_time,
+                freq=freq
+            )
+
     def get_cache_stats(self) -> Dict[str, Any]:
         """
         获取缓存统计信息
