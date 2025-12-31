@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- 任务唯一标识 -->
+    <key>Label</key>
+    <string>com.qlib.autodownload</string>
+
+    <!-- 要执行的脚本路径 -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/berton/Github/qlib/scripts/auto_download_qlib_bin.sh</string>
+    </array>
+
+    <!-- 执行时间间隔：30分钟（1800秒） -->
+    <key>StartInterval</key>
+    <integer>1800</integer>
+
+    <!-- 或者使用日历调度（可选，注释掉 StartInterval 后启用） -->
+    <!--
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Hour</key>
+            <integer>16</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>16</integer>
+            <key>Minute</key>
+            <integer>30</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>17</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>17</integer>
+            <key>Minute</key>
+            <integer>30</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>18</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>18</integer>
+            <key>Minute</key>
+            <integer>30</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>19</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>19</integer>
+            <key>Minute</key>
+            <integer>30</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>20</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>20</integer>
+            <key>Minute</key>
+            <integer>30</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>21</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>21</integer>
+            <key>Minute</key>
+            <integer>30</integer>
+        </dict>
+    </array>
+    -->
+
+    <!-- 工作目录 -->
+    <key>WorkingDirectory</key>
+    <string>/Users/berton/Github/qlib/scripts</string>
+
+    <!-- 环境变量 -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- PATH 环境变量，确保脚本可以找到需要的命令 -->
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+
+        <!-- 如果需要，可以在这里添加其他环境变量 -->
+        <!--
+        <key>TUSHARE_TOKEN</key>
+        <string>your_token_here</string>
+        -->
+    </dict>
+
+    <!-- 标准输出和错误输出日志 -->
+    <!-- 注意：使用 macOS 标准日志目录 ~/Library/Logs/qlib_data/ 以避免 launchd 沙盒权限问题 -->
+    <key>StandardOutPath</key>
+    <string>/Users/berton/Library/Logs/qlib_data/launchd_stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/berton/Library/Logs/qlib_data/launchd_stderr.log</string>
+
+    <!-- 如果任务崩溃，自动重启 -->
+    <key>KeepAlive</key>
+    <false/>
+
+    <!-- 在系统空闲时运行（可选） -->
+    <!--
+    <key>LowPriorityBackgroundIO</key>
+    <true/>
+    -->
+
+    <!-- 运行时负载限制（可选） -->
+    <!--
+    <key>Nice</key>
+    <integer>10</integer>
+    -->
+
+    <!-- 是否在启动时加载 -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <!-- 是否在系统省电模式下运行 -->
+    <key>Disabled</key>
+    <false/>
+</dict>
+</plist>

@@ -2,6 +2,9 @@
   "permissions": {
     "additionalDirectories": [
       "/Users/berton/github/RD-Agent"
+    ],
+    "allow": [
+      "Skill(zcf:git-commit)"
     ]
   },
   "disabledMcpjsonServers": [
