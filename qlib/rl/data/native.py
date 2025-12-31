@@ -2,17 +2,18 @@
 # Licensed under the MIT License.
 from __future__ import annotations
 
+import os
 from pathlib import Path
-from typing import cast, List
+from typing import List, cast
 
 import cachetools
 import pandas as pd
-import pickle
-import os
 
 from qlib.backtest import Exchange, Order
 from qlib.backtest.decision import TradeRange, TradeRangeByTime
 from qlib.constant import EPS_T
+from qlib.utils.pickle_utils import restricted_pickle_load
+
 from .base import (
     BaseIntradayBacktestData,
     BaseIntradayProcessedData,
@@ -182,7 +183,7 @@ class HandlerIntradayProcessedData(BaseIntradayProcessedData):
             hour=23, minute=59, second=59
         )
         with open(path, "rb") as fstream:
-            dataset = pickle.load(fstream)
+            dataset = restricted_pickle_load(fstream)
         data = dataset.handler.fetch(
             pd.IndexSlice[stock_id, start_time:end_time], level=None
         )
