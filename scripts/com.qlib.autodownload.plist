@@ -104,7 +104,7 @@
     <dict>
         <!-- PATH 环境变量，确保脚本可以找到需要的命令 -->
         <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
 
         <!-- 如果需要，可以在这里添加其他环境变量 -->
         <!--
