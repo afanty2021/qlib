@@ -19,8 +19,10 @@ LOG_FILE="${LOG_DIR}/download.log"          # 日志文件
 STATE_FILE="${LOG_DIR}/.download_state"     # 状态文件（记录最后成功的日期）
 MAX_RETRIES=3                               # 最大重试次数
 RETRY_DELAY=10                              # 重试延迟（秒）
-ARIA2C_OPTIONS="-x 16 -s 16"                # aria2c参数
+ARIA2C_OPTIONS="-x 8"                         # aria2c参数（简化：不使用分块下载，避免并发问题）
 MAX_CHECK_DAYS=9                           # 最多向前查找N个交易日（处理长假）
+LOCK_FILE="${LOG_DIR}/.download_lock"       # 锁文件（防止并发执行）
+LOCK_TIMEOUT=3600                           # 锁超时时间（秒，1小时）
 
 # 中国节假日配置（YYYY-MM-DD 格式）
 # 注意：这是硬编码的节假日列表，建议每年更新
@@ -34,6 +36,49 @@ HOLIDAYS_2025=(
     "2025-10-01" "2025-10-02" "2025-10-03" "2025-10-04"  # 国庆节
     "2025-10-05" "2025-10-06" "2025-10-07" "2025-10-08"
 )
+
+# ==================== 锁机制（防止并发执行） ====================
+acquire_lock() {
+    # 检查锁文件是否存在
+    if [[ -f "${LOCK_FILE}" ]]; then
+        # 读取锁文件中的PID
+        local lock_pid
+        lock_pid=$(cat "${LOCK_FILE}" 2>/dev/null || echo "")
+
+        # 检查该进程是否还在运行
+        if [[ -n "${lock_pid}" ]] && kill -0 "${lock_pid}" 2>/dev/null; then
+            # 检查锁是否超时
+            local lock_time
+            lock_time=$(stat -f "%m" "${LOCK_FILE}" 2>/dev/null || stat -c "%Y" "${LOCK_FILE}" 2>/dev/null)
+            local current_time
+            current_time=$(date +%s)
+            local elapsed=$((current_time - lock_time))
+
+            if [[ ${elapsed} -lt ${LOCK_TIMEOUT} ]]; then
+                log "WARN" "另一个实例正在运行（PID: ${lock_pid}，已运行 ${elapsed} 秒），跳过本次执行"
+                return 1
+            else
+                log "WARN" "锁超时（${elapsed} 秒），清理过期锁"
+                rm -f "${LOCK_FILE}"
+            fi
+        else
+            log "INFO" "清理过期的锁文件（进程 ${lock_pid} 已不存在）"
+            rm -f "${LOCK_FILE}"
+        fi
+    fi
+
+    # 创建新锁
+    echo $$ > "${LOCK_FILE}"
+    log "INFO" "已获取锁（PID: $$）"
+    return 0
+}
+
+release_lock() {
+    if [[ -f "${LOCK_FILE}" ]]; then
+        rm -f "${LOCK_FILE}"
+        log "INFO" "已释放锁"
+    fi
+}
 
 # ==================== 工具函数 ====================
 log() {
@@ -312,27 +357,99 @@ check_url_exists() {
     esac
 }
 
+# 清理未完成的下载残留
+cleanup_incomplete_downloads() {
+    local output="$1"
+    local download_dir="$2"
+
+    # 获取基础文件名（不含扩展名）
+    local base_name="${output%.tar.gz}"
+
+    # 查找并清理所有相关的未完成文件
+    # 1. 先清理与主文件名相关的文件 (.tar.gz, .tar.gz.aria2等)
+    for file in "${download_dir}/${output}"*; do
+        if [[ -f "${file}" ]]; then
+            local filename
+            filename=$(basename "${file}")
+
+            # 清理 .aria2 控制文件
+            if [[ "${filename}" == *.aria2 ]]; then
+                log "INFO" "清理未完成下载的控制文件：${filename}"
+                rm -f "${file}"
+            fi
+        fi
+    done
+
+    # 2. 再清理自动重命名的分块文件 (.tar.1.gz, .tar.2.gz 等)
+    for file in "${download_dir}/${base_name}".tar.*.gz; do
+        if [[ -f "${file}" ]]; then
+            local filename
+            filename=$(basename "${file}")
+
+            # 清理分块文件（如 .tar.1.gz, .tar.2.gz 等），但不要清理主文件
+            if [[ "${filename}" =~ \.tar\.[0-9]+\.gz$ ]]; then
+                log "INFO" "清理未完成的分块文件：${filename}"
+                rm -f "${file}"
+            fi
+        fi
+    done
+}
+
+# 验证gzip文件完整性
+verify_gzip_file() {
+    local file="$1"
+
+    if gzip -t "${file}" 2>/dev/null; then
+        return 0
+    else
+        log "WARN" "文件完整性验证失败：${file}"
+        return 1
+    fi
+}
+
 download_file() {
     local url="$1"
     local output="$2"
     local attempt=1
 
+    # 在开始下载前，清理可能存在的未完成下载
+    cleanup_incomplete_downloads "${output}" "${DOWNLOAD_DIR}"
+
     while [ ${attempt} -le ${MAX_RETRIES} ]; do
         log "INFO" "开始下载（尝试 ${attempt}/${MAX_RETRIES}）"
 
-        if aria2c ${ARIA2C_OPTIONS} -o "${output}" "${url}"; then
+        # 使用 -c 参数支持续传，--allow-overwrite=true 覆盖已存在的文件
+        # --auto-file-renaming=false 防止自动重命名（避免产生 .1, .2 等文件）
+        if aria2c ${ARIA2C_OPTIONS} -c --allow-overwrite=true --auto-file-renaming=false -o "${output}" "${url}"; then
             log "INFO" "下载成功：${output}"
 
-            # 验证文件
-            if [ -f "${output}" ]; then
-                local file_size
-                file_size=$(du -h "${output}" | cut -f1)
-                log "INFO" "文件大小：${file_size}"
-                return 0
-            else
+            # 验证文件存在
+            if [ ! -f "${output}" ]; then
                 log "ERROR" "文件未正确保存"
                 return 1
             fi
+
+            # 验证gzip完整性
+            if ! verify_gzip_file "${output}"; then
+                log "ERROR" "下载的文件损坏，删除并重试"
+                rm -f "${output}"
+                if [ ${attempt} -lt ${MAX_RETRIES} ]; then
+                    log "INFO" "等待 ${RETRY_DELAY} 秒后重试..."
+                    sleep ${RETRY_DELAY}
+                fi
+                ((attempt++))
+                continue
+            fi
+
+            # 验证通过，显示文件大小
+            local file_size
+            file_size=$(du -h "${output}" | cut -f1)
+            log "INFO" "文件大小：${file_size}"
+
+            # 清理可能残留的分块文件
+            cleanup_incomplete_downloads "${output}" "${DOWNLOAD_DIR}"
+
+            return 0
         else
             log "WARN" "下载失败（尝试 ${attempt}/${MAX_RETRIES}）"
             if [ ${attempt} -lt ${MAX_RETRIES} ]; then
@@ -344,6 +461,8 @@ download_file() {
     done
 
     log "ERROR" "下载失败，已达到最大重试次数"
+    # 清理失败的残留文件
+    cleanup_incomplete_downloads "${output}" "${DOWNLOAD_DIR}"
     return 1
 }
 
@@ -406,20 +525,51 @@ extract_tarball() {
 
             # 4. 验证目标日期数据
             local day_file="${CN_DATA_DIR}/calendars/day.txt"
+            local data_ok=false
             if [ -f "${day_file}" ]; then
-                if grep -q "${target_date}" "${day_file}" 2>/dev/null; then
-                    log "INFO" "目标日期数据验证通过：${target_date}"
+                # 获取数据中的最新日期
+                local latest_data_date
+                latest_data_date=$(tail -1 "${day_file}" 2>/dev/null || echo "")
+
+                if [[ -n "${latest_data_date}" ]]; then
+                    log "INFO" "数据中的最新日期：${latest_data_date}"
+
+                    # 检查最新日期是否 >= 目标日期
+                    # 使用字符串比较（YYYY-MM-DD格式可以直接比较）
+                    if [[ "${latest_data_date}" > "${target_date}" ]] || [[ "${latest_data_date}" == "${target_date}" ]]; then
+                        log "INFO" "目标日期数据验证通过：${target_date} (数据最新: ${latest_data_date})"
+                        data_ok=true
+                    else
+                        # 数据日期早于目标日期，这是正常的（数据发布有延迟）
+                        # 但我们仍然标记成功，因为文件已经正确解压
+                        log "INFO" "数据日期 ${latest_data_date} 早于目标日期 ${target_date}，数据可能有延迟"
+                        log "INFO" "但文件已正确解压，标记为成功"
+                        data_ok=true
+                    fi
                 else
-                    log "WARN" "目标日期数据未在 calendars/day.txt 中找到，可能是正常情况"
+                    log "ERROR" "无法读取数据日期"
+                    data_ok=false
                 fi
+            else
+                log "ERROR" "day.txt 文件不存在"
+                data_ok=false
             fi
 
-            # 5. 清理压缩包
-            rm -f "${tarball}"
-            log "INFO" "已删除压缩包：${tarball}"
+            # 只有在数据验证通过后才继续
+            if [[ "${data_ok}" == "true" ]]; then
+                # 5. 清理压缩包
+                rm -f "${tarball}"
+                log "INFO" "已删除压缩包：${tarball}"
 
-            # 6. 记录成功
-            mark_download_success "${target_date}"
+                # 6. 记录成功（记录实际数据的最新日期，而不是目标日期）
+                # 这样可以更准确地反映数据状态
+                local latest_data_date
+                latest_data_date=$(tail -1 "${CN_DATA_DIR}/calendars/day.txt" 2>/dev/null || echo "${target_date}")
+                mark_download_success "${latest_data_date}"
+            else
+                log "ERROR" "数据验证失败，不标记成功"
+                return 1
+            fi
 
             log "INFO" "========================================"
             log "INFO" "数据更新完成！"
@@ -456,6 +606,14 @@ extract_tarball() {
 
 # ==================== 主流程 ====================
 main() {
+    # 尝试获取锁，如果失败则退出
+    if ! acquire_lock; then
+        exit 0
+    fi
+
+    # 确保脚本退出时释放锁
+    trap release_lock EXIT
+
     log "INFO" "========================================"
     log "INFO" "Qlib 数据自动下载脚本启动"
     log "INFO" "========================================"
