@@ -30,6 +30,7 @@ from ..utils import (
     normalize_cache_fields,
     normalize_cache_instruments,
 )
+from ..utils.pickle_utils import restricted_pickle_load
 
 from ..log import get_module_logger
 from .base import Feature
@@ -231,7 +232,7 @@ class CacheUtils:
             cache_path = Path(cache_path)
             meta_path = cache_path.with_suffix(".meta")
             with meta_path.open("rb") as f:
-                d = pickle.load(f)
+                d = restricted_pickle_load(f)
             with meta_path.open("wb") as f:
                 try:
                     d["meta"]["last_visit"] = str(time.time())
@@ -715,7 +716,7 @@ class DiskExpressionCache(ExpressionCache):
             self.r, f"{str(C.dpm.get_data_uri())}:expression-{cache_uri}"
         ):
             with meta_path.open("rb") as f:
-                d = pickle.load(f)
+                d = restricted_pickle_load(f)
             instrument = d["info"]["instrument"]
             field = d["info"]["field"]
             freq = d["info"]["freq"]
@@ -1162,7 +1163,7 @@ class DiskDatasetCache(DatasetCache):
             self.r, f"{str(C.dpm.get_data_uri())}:dataset-{cache_uri}"
         ):
             with meta_path.open("rb") as f:
-                d = pickle.load(f)
+                d = restricted_pickle_load(f)
             instruments = d["info"]["instruments"]
             fields = d["info"]["fields"]
             freq = d["info"]["freq"]
