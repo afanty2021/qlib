@@ -358,6 +358,21 @@ cat data_download_summary.md
 
 ## 变更记录 (Changelog)
 
+### 2026-02-10 11:20:00 - 策略测试与代码优化
+- ✨ **新增测试用例**：
+  - `tests/backtest/test_soft_topk_strategy.py` - SoftTopK 策略回测测试
+  - `tests/backtest/test_soft_topk_strategy_cold_start.py` - 冷启动场景测试
+- 🔧 **代码优化**：
+  - `qlib/contrib/rolling/ddgda.py` - 滚动训练框架优化
+  - `qlib/contrib/strategy/cost_control.py` - 成本控制策略改进
+  - `qlib/contrib/tuner/tuner.py` - 超参数调优器改进
+  - `qlib/data/cache.py` - 缓存系统优化
+  - `qlib/data/dataset/loader.py` - 数据集加载器改进
+  - `qlib/utils/mod.py` - 模块工具增强
+  - `qlib/utils/objm.py` - 对象管理工具优化
+  - `qlib/workflow/task/manage.py` - 任务管理系统改进
+  - `scripts/data_collector/utils.py` - 数据收集器工具优化
+
 ### 2026-01-24 10:30:00 - Upstream同步与安全加固
 - 🔒 **安全修复**：
   - `#2076` (2025-12-30): 限制 pickle 反序列化为安全类，防止代码注入攻击
