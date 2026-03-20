@@ -358,6 +358,17 @@ cat data_download_summary.md
 
 ## 变更记录 (Changelog)
 
+### 2026-03-20 - Upstream同步更新
+- 🔒 **安全修复** (#2153)：
+  - 使用 `RestrictedUnpickler` 防止不安全的 pickle 反序列化
+  - 增强 `load_instance` 函数的安全性
+- 🔧 **回测修复** (#2127)：
+  - 修复 `end_time` 缺失时日历溢出问题
+  - 改善回测边界条件处理
+- 📝 **代码风格统一**：
+  - 统一 `__all__` 导出列表为单行格式
+  - 保持与上游代码风格一致
+
 ### 2026-02-10 11:20:00 - 策略测试与代码优化
 - ✨ **新增测试用例**：
   - `tests/backtest/test_soft_topk_strategy.py` - SoftTopK 策略回测测试
