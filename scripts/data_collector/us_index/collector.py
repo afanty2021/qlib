@@ -23,7 +23,6 @@ from data_collector.index import IndexBase
 from data_collector.utils import deco_retry, get_calendar_list, get_trading_date_by_shift
 from data_collector.utils import get_instruments
 
-
 WIKI_URL = "https://en.wikipedia.org/wiki"
 
 WIKI_INDEX_NAME_MAP = {
