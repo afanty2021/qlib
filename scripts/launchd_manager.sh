@@ -217,7 +217,7 @@ status() {
         info "下次执行时间："
         # 由于 launchd 不直接提供下次执行时间，这里只显示任务已配置
         echo "  • 执行间隔：每 30 分钟"
-        echo "  • 时间窗口：16:00-22:00（由脚本内部控制）"
+        echo "  • 时间窗口：16:00-23:30（由脚本内部控制）"
 
     else
         error "任务状态：未加载"
@@ -235,7 +235,7 @@ status() {
 
 # 查看日志
 logs() {
-    local log_dir="${HOME}/Downloads/qlib_data"
+    local log_dir="${HOME}/Library/Logs/qlib_data"
 
     echo ""
     info "====== 日志文件 ======"
@@ -336,8 +336,9 @@ ${GREEN}示例：${NC}
 
 ${GREEN}说明：${NC}
   • 安装后，脚本将每 30 分钟执行一次
-  • 脚本内部有时间窗口检查（16:00-22:00）
-  • 日志文件位于：~/Downloads/qlib_data/
+  • 脚本内部有时间窗口检查（16:00-23:30）
+  • 日志文件位于：~/Library/Logs/qlib_data/
+  • 手动补跑/绕过时间窗：QDLIB_FORCE_CHECK=1 ./launchd_manager.sh test
 
 EOF
 }

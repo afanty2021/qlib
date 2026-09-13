@@ -27,11 +27,11 @@
 ### 智能检测逻辑
 
 ```
-定时触发（每30分钟，16:00-22:00）
+定时触发（每30分钟，16:00-23:30）
     ↓
 检查时间窗口和交易日
     ↓
-今天是否在16:00-22:00？
+今天是否在16:00-23:30？
 ├─ 否 → 跳过检测
 └─ 是 → 继续
     ↓
@@ -53,9 +53,10 @@
 ├─ 是 → 跳过（去重）
 └─ 否 → 继续
     ↓
-检查 GitHub Release
-├─ 未上线 → 等待下次检测
-└─ 已上线 → 下载
+探测 GitHub Release（curl -r 0-0 首字节探测 + 重试）
+├─ 404 未上线 → 等待下次检测（exit 0）
+├─ 探测失败（网络/5xx/超时）→ 报错退出（exit 1，调度器可感知）
+└─ 已上线 → 下载（下载后 gzip 校验，损坏自动重试）
     ↓
 备份现有数据
     ↓
@@ -66,13 +67,21 @@
 └─ 失败 → 恢复备份 → 报错
 ```
 
+> **退出码语义**（调度/告警依赖）：`0` = 正常（完成、或按规则跳过：不在时间窗、
+> 未发布 404、已下载、锁冲突）；`1` = 异常（探测失败、下载失败、解压/验证失败）。
+> 探测失败与"未发布"严格区分——前者若被静默吞掉，数据会持续陈旧而调度器毫无感知
+> （2026-04~06 断更的教训）。
+
 ### 时间窗口和检测策略
 
 | 时间段 | 行为 |
 |--------|------|
 | 00:00-15:59 | 不检测（数据未发布） |
-| 16:00-22:00 | 检测窗口期（每30分钟） |
-| 22:00-23:59 | 不检测（等待第二天） |
+| 16:00-23:30 | 检测窗口期（每30分钟） |
+| 23:30-23:59 | 不检测（等待第二天） |
+
+> `QDLIB_FORCE_CHECK=1` 可跳过时间窗与交易日判定（幂等性由状态文件保证），
+> 供定时任务补偿与手动补跑使用。
 
 ### 交易日处理
 
@@ -121,8 +130,8 @@ cd /Users/berton/Github/qlib
 # 编辑 crontab
 crontab -e
 
-# 添加以下行（每30分钟执行一次，16:00-22:00）
-0,30 16-21 * * * sleep $((RANDOM % 60)); /bin/bash /Users/berton/Github/qlib/scripts/auto_download_qlib_bin.sh
+# 添加以下行（每30分钟执行一次，覆盖 16:00-23:30 检测窗口）
+0,30 16-23 * * * sleep $((RANDOM % 60)); /bin/bash /Users/berton/Github/qlib/scripts/auto_download_qlib_bin.sh
 ```
 
 ### 方式三：手动执行测试
@@ -131,8 +140,11 @@ crontab -e
 # 赋予执行权限
 chmod +x scripts/auto_download_qlib_bin.sh
 
-# 手动运行
+# 手动运行（受时间窗/交易日限制）
 ./scripts/auto_download_qlib_bin.sh
+
+# 手动补跑：跳过时间窗与交易日判定（幂等，已下载会自动跳过）
+QDLIB_FORCE_CHECK=1 ./scripts/auto_download_qlib_bin.sh
 ```
 
 ## 配置选项
@@ -143,22 +155,25 @@ chmod +x scripts/auto_download_qlib_bin.sh
 # 基础配置
 REPO_OWNER="chenditc"
 REPO_NAME="investment_data"
-DOWNLOAD_DIR="${HOME}/Downloads/qlib_data"
+# 下载目录必须是 TCC 安全路径：~/Downloads 会被 macOS 拒绝后台进程访问
+# （launchd/cron 下 rm/tar 报 "Operation not permitted"，2026-05~06 断更根因）
+DOWNLOAD_DIR="${HOME}/.qlib/downloads"
 QLIB_DATA_DIR="${HOME}/.qlib/qlib_data"
 CN_DATA_DIR="${QLIB_DATA_DIR}/cn_data"
 CN_DATA_BACKUP="${QLIB_DATA_DIR}/cn_data_backup"
 
-# 日志和状态
-LOG_FILE="${DOWNLOAD_DIR}/download.log"
-STATE_FILE="${DOWNLOAD_DIR}/.download_state"  # 记录最后成功的日期
+# 日志和状态（macOS 标准日志目录，launchd 可写）
+LOG_DIR="${HOME}/Library/Logs/qlib_data"
+LOG_FILE="${LOG_DIR}/download.log"
+STATE_FILE="${LOG_DIR}/.download_state"  # 记录最后成功的日期
 
 # 下载配置
 MAX_RETRIES=3
 RETRY_DELAY=10
-ARIA2C_OPTIONS="-x 16 -s 16"
+ARIA2C_OPTIONS="-x 8"
 
 # 交易日配置
-MAX_CHECK_DAYS=5  # 最多向前查找5个交易日
+MAX_CHECK_DAYS=9  # 最多向前查找9个交易日（处理长假）
 
 # 节假日配置（每年更新）
 HOLIDAYS_2025=(
@@ -177,26 +192,26 @@ HOLIDAYS_2025=(
 
 ```bash
 # 查看完整日志
-cat ~/Downloads/qlib_data/download.log
+cat ~/Library/Logs/qlib_data/download.log
 
 # 实时查看日志
-tail -f ~/Downloads/qlib_data/download.log
+tail -f ~/Library/Logs/qlib_data/download.log
 
 # 查看最近10条
-tail -n 10 ~/Downloads/qlib_data/download.log
+tail -n 10 ~/Library/Logs/qlib_data/download.log
 
 # 查看特定时间的日志
-grep "2025-12-30" ~/Downloads/qlib_data/download.log
+grep "2025-12-30" ~/Library/Logs/qlib_data/download.log
 ```
 
 ## 状态管理
 
 ```bash
 # 查看最后下载成功的日期
-cat ~/Downloads/qlib_data/.download_state
+cat ~/Library/Logs/qlib_data/.download_state
 
 # 强制重新下载（删除状态文件）
-rm ~/Downloads/qlib_data/.download_state
+rm ~/Library/Logs/qlib_data/.download_state
 ```
 
 ## 典型场景
@@ -300,19 +315,19 @@ rm ~/Downloads/qlib_data/.download_state
 
 ```bash
 # 查看完整日志
-cat ~/Downloads/qlib_data/download.log
+cat ~/Library/Logs/qlib_data/download.log
 
 # 实时查看日志
-tail -f ~/Downloads/qlib_data/download.log
+tail -f ~/Library/Logs/qlib_data/download.log
 
 # 查看最近10条
-tail -n 10 ~/Downloads/qlib_data/download.log
+tail -n 10 ~/Library/Logs/qlib_data/download.log
 ```
 
 ## 工作流程
 
 ```
-每30分钟触发（16:00-22:00）
+每30分钟触发（16:00-23:30）
     ↓
 检查时间窗口和交易日
     ↓
@@ -367,10 +382,10 @@ sudo apt-get install aria2 curl
 **解决**：
 ```bash
 # 检查状态
-cat ~/Downloads/qlib_data/.download_state
+cat ~/Library/Logs/qlib_data/.download_state
 
 # 查看日志确认原因
-tail -n 50 ~/Downloads/qlib_data/download.log
+tail -n 50 ~/Library/Logs/qlib_data/download.log
 
 # 如果是网络问题，手动运行
 ./scripts/auto_download_qlib_bin.sh
@@ -383,7 +398,7 @@ tail -n 50 ~/Downloads/qlib_data/download.log
 **解决**：
 ```bash
 # 查看错误日志
-grep "ERROR" ~/Downloads/qlib_data/download.log
+grep "ERROR" ~/Library/Logs/qlib_data/download.log
 
 # 检查备份数据是否存在
 ls -la ~/.qlib/qlib_data/cn_data_backup
@@ -429,10 +444,10 @@ ARIA2C_OPTIONS="-x 16 -s 16 --max-download-limit=5000K"
 crontab -e
 
 # 每15分钟检测一次
-*/15 16-21 * * * sleep $((RANDOM % 60)); /bin/bash /Users/berton/Github/qlib/scripts/auto_download_qlib_bin.sh
+*/15 16-23 * * * sleep $((RANDOM % 60)); /bin/bash /Users/berton/Github/qlib/scripts/auto_download_qlib_bin.sh
 
 # 每小时检测一次
-0 16-21 * * * sleep $((RANDOM % 60)); /bin/bash /Users/berton/Github/qlib/scripts/auto_download_qlib_bin.sh
+0 16-23 * * * sleep $((RANDOM % 60)); /bin/bash /Users/berton/Github/qlib/scripts/auto_download_qlib_bin.sh
 ```
 
 ### 自定义节假日列表
@@ -470,7 +485,7 @@ notify-send "Qlib 下载" "数据下载完成"
 创建 `/etc/logrotate.d/qlib-download`：
 
 ```
-/Users/your_username/Downloads/qlib_data/download.log {
+/Users/your_username/Library/Logs/qlib_data/download.log {
     daily
     rotate 7
     compress
@@ -568,7 +583,7 @@ Description=Qlib Data Auto Download Timer
 Requires=qlib-download.service
 
 [Timer]
-OnCalendar=16:00-22:00/30min
+OnCalendar=16:00-23:30/30min
 RandomizedDelaySec=60
 AccuracySec=1m
 Persistent=true

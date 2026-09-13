@@ -10,7 +10,6 @@ set -euo pipefail
 # ==================== 配置区域 ====================
 REPO_OWNER="chenditc"
 REPO_NAME="investment_data"
-DOWNLOAD_DIR="${HOME}/Downloads/qlib_data"  # 下载目录
 QLIB_DATA_DIR="${HOME}/.qlib/qlib_data"     # Qlib数据目录
 CN_DATA_DIR="${QLIB_DATA_DIR}/cn_data"      # 中国数据目录
 CN_DATA_BACKUP="${QLIB_DATA_DIR}/cn_data_backup"  # 备份目录
@@ -27,8 +26,8 @@ ARIA2C_OPTIONS="-x 8"                         # aria2c参数（简化：不使�
 MAX_CHECK_DAYS=9                           # 最多向前查找N个交易日（处理长假）
 LOCK_FILE="${LOG_DIR}/.download_lock"       # 锁文件（防止并发执行）
 LOCK_TIMEOUT=3600                           # 锁超时时间（秒，1小时）
-VERIFY_WAIT_MAX_ATTEMPTS=5                 # 文件完整性验证最大尝试次数
-VERIFY_WAIT_DELAY=(1 2 3 5 10 15)          # 文件验证等待间隔（秒）
+# 待处理包文件名模式（日期为捕获组，BASH_REMATCH[1] 取日期）
+PENDING_FILE_RE='qlib_bin_([0-9]{4}-[0-9]{2}-[0-9]{2})\.tar\.gz$'
 
 # 中国节假日配置（YYYY-MM-DD 格式）
 # 注意：这是硬编码的节假日列表，建议每年更新
@@ -156,7 +155,7 @@ get_previous_trading_day() {
     fi
 
     while [ ${days_ago} -lt ${MAX_CHECK_DAYS} ]; do
-        ((days_ago++))
+        ((++days_ago))
 
         # macOS 和 Linux 兼容的日期计算
         if [ ${is_macos} -eq 1 ]; then
@@ -189,7 +188,7 @@ get_next_trading_day() {
     fi
 
     while [ ${days_ahead} -lt ${MAX_CHECK_DAYS} ]; do
-        ((days_ahead++))
+        ((++days_ahead))
 
         # macOS 和 Linux 兼容的日期计算
         if [ ${is_macos} -eq 1 ]; then
@@ -349,13 +348,20 @@ get_last_success_date() {
     fi
 }
 
+# 探测 release 是否已发布。
+# 返回码：0 = 已发布（200/206）；1 = 确定未发布（404）；2 = 探测失败
+# （000/超时/5xx 等网络或服务端异常，此时无法区分"未发布"）。
+# 调用方必须把 2 当作失败退出，不能与 1 一样静默跳过——否则调度器每天
+# 看到 exit 0 而数据持续陈旧（2026-04~06 断更的故障类别）。
+# 注意：--retry-all-errors 需要 curl >= 7.71（macOS <= 12 自带 7.64 不支持，
+# 旧系统上该选项会被拒绝，http_code 为空，同样落入 return 2 的失败分支）。
 check_url_exists() {
     local url="$1"
     local http_code
 
     # -r 0-0 只取首字节探测：整包下载到 /dev/null 会撞上 --max-time 30 返回 000，
     # 被误判为"发布尚未上线"。GitHub release 链路存在分钟级间歇拥塞（000 可自愈），
-    # curl 原生重试 3 次以穿透短拥塞窗口。
+    # curl 原生重试 3 次以穿透短拥塞窗口（404 也会被重试，多花 ~15s，可接受）。
     http_code=$(curl -L -s -o /dev/null -w "%{http_code}" --max-time 20 -r 0-0 \
         --retry 3 --retry-all-errors --retry-delay 5 "${url}")
 
@@ -367,8 +373,8 @@ check_url_exists() {
             return 1
             ;;
         *)
-            log "WARN" "收到意外的HTTP状态码：${http_code}"
-            return 1
+            log "ERROR" "发布探测失败：HTTP ${http_code}（网络/服务端异常，非'未发布'）"
+            return 2
             ;;
     esac
 }
@@ -416,14 +422,9 @@ check_pending_downloads() {
     local pending_files=0
 
     for file in "${DOWNLOAD_DIR}"/qlib_bin_*.tar.gz; do
-        if [[ -f "${file}" ]]; then
-            local filename
-            filename=$(basename "${file}")
-
-            # 检查是否是临时下载文件（aria2c控制文件等）
-            if [[ "${filename}" != *.aria2 ]] && [[ "${filename}" =~ qlib_bin_[0-9]{4}-[0-9]{2}-[0-9]{2}\.tar\.gz$ ]]; then
-                pending_files=$((pending_files + 1))
-            fi
+        # glob 已限定 .tar.gz 结尾（.aria2 控制文件不可能命中），再校验日期格式
+        if [[ -f "${file}" ]] && [[ "$(basename "${file}")" =~ ${PENDING_FILE_RE} ]]; then
+            pending_files=$((pending_files + 1))
         fi
     done
 
@@ -432,48 +433,14 @@ check_pending_downloads() {
     return 0
 }
 
-# 获取待处理的下载文件
-get_pending_download_file() {
-    local target_date="$1"
-    local pending_file="${DOWNLOAD_DIR}/qlib_bin_${target_date}.tar.gz"
-
-    if [[ -f "${pending_file}" ]]; then
-        echo "${pending_file}"
-        return 0
-    fi
-
-    return 1
-}
-
-# 验证gzip文件完整性（增强版：支持等待和重试）
+# 验证gzip文件完整性。单次确定性校验：锁机制保证没有并发写入者，
+# 静态文件重试必然得到相同结果，等待重试没有意义。
 verify_gzip_file() {
     local file="$1"
-    local attempt=1
-    local max_attempts=${VERIFY_WAIT_MAX_ATTEMPTS}
-
-    while [ ${attempt} -le ${max_attempts} ]; do
-        if gzip -t "${file}" 2>/dev/null; then
-            if [ ${attempt} -gt 1 ]; then
-                log "INFO" "文件完整性验证通过（重试 ${attempt}/${max_attempts} 成功）"
-            fi
-            return 0
-        fi
-
-        # 如果不是最后一次尝试，等待一段时间后重试
-        if [ ${attempt} -lt ${max_attempts} ]; then
-            local wait_time_index=$((attempt - 1))
-            if [ ${wait_time_index} -ge ${#VERIFY_WAIT_DELAY[@]} ]; then
-                wait_time_index=$((${#VERIFY_WAIT_DELAY[@]} - 1))
-            fi
-            local wait_time=${VERIFY_WAIT_DELAY[$wait_time_index]}
-            log "WARN" "文件完整性验证失败（尝试 ${attempt}/${max_attempts}），等待 ${wait_time} 秒后重试..."
-            sleep ${wait_time}
-        fi
-
-        ((attempt++))
-    done
-
-    log "WARN" "文件完整性验证失败：${file}（已重试 ${max_attempts} 次）"
+    if gzip -t "${file}" 2>/dev/null; then
+        return 0
+    fi
+    log "WARN" "文件完整性校验失败：${file}"
     return 1
 }
 
@@ -504,11 +471,11 @@ download_file() {
                 log "ERROR" "下载的文件损坏，删除并重试"
                 rm -f "${output}"
                 if [ ${attempt} -lt ${MAX_RETRIES} ]; then
-                    log "INFO" "等待 ${RETRY_DELAY} 秒后重试..."
-                    sleep ${RETRY_DELAY}
-                fi
-                ((attempt++))
-                continue
+                log "INFO" "等待 ${RETRY_DELAY} 秒后重试..."
+                sleep ${RETRY_DELAY}
+            fi
+            ((++attempt))
+            continue
             fi
 
             # 验证通过，显示文件大小
@@ -526,7 +493,7 @@ download_file() {
                 log "INFO" "等待 ${RETRY_DELAY} 秒后重试..."
                 sleep ${RETRY_DELAY}
             fi
-            ((attempt++))
+            ((++attempt))
         fi
     done
 
@@ -707,14 +674,8 @@ main() {
     # 列出待处理文件
     if [ "${pending_count}" -gt 0 ]; then
         for file in "${DOWNLOAD_DIR}"/qlib_bin_*.tar.gz; do
-            if [[ -f "${file}" ]]; then
-                local filename
-                filename=$(basename "${file}")
-
-                # 检查是否是临时下载文件（aria2c控制文件等）
-                if [[ "${filename}" != *.aria2 ]] && [[ "${filename}" =~ qlib_bin_[0-9]{4}-[0-9]{2}-[0-9]{2}\.tar\.gz$ ]]; then
-                    log "INFO" "发现待处理文件：${filename}"
-                fi
+            if [[ -f "${file}" ]] && [[ "$(basename "${file}")" =~ ${PENDING_FILE_RE} ]]; then
+                log "INFO" "发现待处理文件：$(basename "${file}")"
             fi
         done
     fi
@@ -743,7 +704,7 @@ main() {
                 local filename
                 filename=$(basename "${file}")
 
-                if [[ "${filename}" =~ qlib_bin_([0-9]{4}-[0-9]{2}-[0-9]{2})\.tar\.gz$ ]]; then
+                if [[ "${filename}" =~ ${PENDING_FILE_RE} ]]; then
                     local file_date="${BASH_REMATCH[1]}"
 
                     # 比较日期，找到最新的
@@ -758,14 +719,16 @@ main() {
         if [[ -n "${latest_pending_file}" ]]; then
             log "INFO" "优先处理最新的待处理文件：$(basename "${latest_pending_file}")"
 
-            # 跳过正常的下载流程，直接处理已下载的文件
-            local output_file
-            output_file=$(basename "${latest_pending_file}")
             local tarball_path="${latest_pending_file}"
             local target_date="${latest_date}"
 
-            # 解压并更新 Qlib 数据
-            if extract_tarball "${tarball_path}" "${target_date}"; then
+            # 半截包防御：待处理文件可能是上次中断下载的残留（部分文件没有
+            # 完成标记），必须先通过 gzip 校验才能解压；损坏则删除并转入下方
+            # 正常下载流程，避免把截断的 tar 包送进 备份→解压→回滚 的全量循环。
+            if ! verify_gzip_file "${tarball_path}"; then
+                log "WARN" "待处理文件未通过完整性校验（疑似未完成的下载），删除后走正常下载流程：$(basename "${tarball_path}")"
+                rm -f "${tarball_path}"
+            elif extract_tarball "${tarball_path}" "${target_date}"; then
                 # 显示更新后的数据目录大小
                 local new_data_size
                 new_data_size=$(du -sh "${CN_DATA_DIR}" 2>/dev/null | cut -f1)
@@ -779,7 +742,7 @@ main() {
                 exit 0
             else
                 log "ERROR" "待处理文件解压失败，删除文件以便下次重新下载"
-                rm -f "${latest_pending_file}"
+                rm -f "${tarball_path}"
                 exit 1
             fi
         fi
@@ -800,10 +763,17 @@ main() {
     local base_url="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download"
     local release_url="${base_url}/${target_date}/qlib_bin.tar.gz"
 
-    # 检查是否存在发布
-    if ! check_url_exists "${release_url}"; then
+    # 探测发布：404 = 未发布（正常等待，下次再试）；探测失败（rc=2）≠ 未发布，
+    # 必须以非零退出，让 20:00 的调度任务能感知并告警，而不是静默断更。
+    local probe_rc=0
+    check_url_exists "${release_url}" || probe_rc=$?
+    if [ "${probe_rc}" -eq 1 ]; then
         log "INFO" "发布尚未上线，将在下次检测"
         exit 0
+    fi
+    if [ "${probe_rc}" -ne 0 ]; then
+        log "ERROR" "发布探测失败（rc=${probe_rc}），以失败退出供调度器告警"
+        exit 1
     fi
 
     log "INFO" "找到发布：${release_url}"
@@ -812,14 +782,9 @@ main() {
     local output_file="qlib_bin_${target_date}.tar.gz"
     local tarball_path="${DOWNLOAD_DIR}/${output_file}"
 
-    # 优化：优先处理已存在的下载文件
-    if [ -f "${tarball_path}" ]; then
-        log "INFO" "发现已存在的下载文件，跳过下载直接处理：${output_file}"
-    else
-        if ! download_file "${release_url}" "${output_file}"; then
-            log "ERROR" "下载任务失败"
-            exit 1
-        fi
+    if ! download_file "${release_url}" "${output_file}"; then
+        log "ERROR" "下载任务失败"
+        exit 1
     fi
 
     # 解压并更新 Qlib 数据
