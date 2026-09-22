@@ -7,8 +7,10 @@
  * 部署（Dashboard 方式，无需本地 CLI）：
  *   1. dash.cloudflare.com → Workers & Pages → Create → Create Worker
  *   2. 命名后点 Deploy，再点 Edit code，粘贴本文件全部内容，Deploy
- *   3. 把 https://<your-worker>.workers.dev 加到 auto_download_qlib_bin.sh 的
- *      MIRROR_PREFIXES 首位（自建最稳，公共镜像只作兜底）
+ *   3. 重要：*.workers.dev 在中国大陆被 DNS 污染/SNI 阻断（实测解析到假 IP），
+ *      直连通常不可用。请在 Worker 的 Settings → Domains & Routes 绑定自有
+ *      自定义域（Custom Domains），再把自定义域地址加入
+ *      auto_download_qlib_bin.sh 的 MIRROR_PREFIXES 首位（自建最稳，公共镜像只作兜底）
  *
  * 依赖的行为（aria2c 多连接下载可用性）：
  *   - Range 头随请求透传，206 分段响应原样回传 → aria2c -x 16 -s 16 分段下载

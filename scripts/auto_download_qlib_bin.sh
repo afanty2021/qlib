@@ -23,10 +23,13 @@ STATE_FILE="${LOG_DIR}/.download_state"     # 状态文件（记录最后成功�
 MAX_RETRIES=3                               # 最大重试次数
 RETRY_DELAY=10                              # 重试延迟（秒）
 # GitHub 加速镜像前缀（按序探测，首个可用者胜出；全部失败回退直连）。
-# 镜像只是反向代理，字节与直连一致，gzip 完整性校验不变。可用性变化频繁
+# 注意：镜像是第三方反向代理，内容一致是信任假设而非保证——下载后用直连元数据
+# 大小交叉校验 + gzip 校验兜底（覆盖意外损坏与粗粒度陈旧）。可用性变化频繁
 # （2026-09-22 实测：ghfast.top 可用且并发线性扩展；ghp.ci/gh-proxy.com/
 # ghproxy.net/gh.llkk.cc 均不可用），探测不通过自动换下一个，勿写死依赖单一镜像。
-# 自建 Cloudflare Worker 反代后把地址加在首位（见 scripts/cloudflare_worker_gh_proxy.js）。
+# 自建 Cloudflare Worker 反代后把地址加在首位（见 scripts/cloudflare_worker_gh_proxy.js，
+# 注意 *.workers.dev 在大陆被 DNS 污染，需绑定自定义域后再用）。
+# 禁用镜像加速：把数组置空（MIRROR_PREFIXES=()），勿注释/删除整块声明。
 MIRROR_PREFIXES=(
     "https://ghfast.top"
     "https://ghp.ci"
@@ -39,9 +42,15 @@ MIRROR_PREFIXES=(
 ARIA2C_OPTIONS="-x 16 -s 16 -k 1M --lowest-speed-limit=10K --timeout=30 --connect-timeout=10 --retry-wait=2"
 MAX_CHECK_DAYS=9                           # 最多向前查找N个交易日（处理长假）
 LOCK_FILE="${LOG_DIR}/.download_lock"       # 锁文件（防止并发执行）
-LOCK_TIMEOUT=3600                           # 锁超时时间（秒，1小时）
 # 待处理包文件名模式（日期为捕获组，BASH_REMATCH[1] 取日期）
 PENDING_FILE_RE='qlib_bin_([0-9]{4}-[0-9]{2}-[0-9]{2})\.tar\.gz$'
+# 下载后与直连元数据交叉校验的包大小基准（字节）。探测成功时由 fetch_expected_size
+# 填充；为空表示基准缺失（直连不可用/解析失败），跳过比对。
+RELEASE_EXPECTED_SIZE=""
+# 救援路径探活的镜像前缀（probe_mirrors_available 写入，resolve_download_url
+# 消费一次后清空）。必须在此声明：set -u 下未声明变量会让 resolve_download_url
+# 在命令替换内被 unbound 错误打断，静默退化成直连。
+PREFERRED_MIRROR_PREFIX=""
 
 # 中国节假日配置（YYYY-MM-DD 格式）
 # 注意：这是硬编码的节假日列表，建议每年更新
@@ -64,26 +73,17 @@ acquire_lock() {
         local lock_pid
         lock_pid=$(cat "${LOCK_FILE}" 2>/dev/null || echo "")
 
-        # 检查该进程是否还在运行
-        if [[ -n "${lock_pid}" ]] && kill -0 "${lock_pid}" 2>/dev/null; then
-            # 检查锁是否超时
-            local lock_time
-            lock_time=$(stat -f "%m" "${LOCK_FILE}" 2>/dev/null || stat -c "%Y" "${LOCK_FILE}" 2>/dev/null)
-            local current_time
-            current_time=$(date +%s)
-            local elapsed=$((current_time - lock_time))
-
-            if [[ ${elapsed} -lt ${LOCK_TIMEOUT} ]]; then
-                log "WARN" "另一个实例正在运行（PID: ${lock_pid}，已运行 ${elapsed} 秒），跳过本次执行"
-                return 1
-            else
-                log "WARN" "锁超时（${elapsed} 秒），清理过期锁"
-                rm -f "${LOCK_FILE}"
-            fi
-        else
-            log "INFO" "清理过期的锁文件（进程 ${lock_pid} 已不存在）"
-            rm -f "${LOCK_FILE}"
+        # PID 存活且确为本脚本进程 → 不偷锁。下载可持续 100+ 分钟（直连最坏情形），
+        # 按锁龄强拆会让第二个实例并发写同一文件。锁龄不参与判定。
+        if [[ -n "${lock_pid}" ]] && kill -0 "${lock_pid}" 2>/dev/null \
+            && ps -p "${lock_pid}" -o command= 2>/dev/null | grep -q "auto_download_qlib_bin"; then
+            log "WARN" "另一个实例正在运行（PID: ${lock_pid}），跳过本次执行"
+            return 1
         fi
+
+        # 进程已不存在（或 PID 已被无关进程复用，command 不匹配）→ 失效锁，清理
+        log "INFO" "清理失效的锁文件（PID: ${lock_pid} 已不存在或非本脚本进程）"
+        rm -f "${LOCK_FILE}"
     fi
 
     # 创建新锁
@@ -376,8 +376,10 @@ check_url_exists() {
     # -r 0-0 只取首字节探测：整包下载到 /dev/null 会撞上 --max-time 30 返回 000，
     # 被误判为"发布尚未上线"。GitHub release 链路存在分钟级间歇拥塞（000 可自愈），
     # curl 原生重试 3 次以穿透短拥塞窗口（404 也会被重试，多花 ~15s，可接受）。
+    # 赋值必须挂兜底：curl 自身崩溃（非 000 输出而是退出码非零）时，set -e 会
+    # 在镜像救援之前直接带崩脚本。
     http_code=$(curl -L -s -o /dev/null -w "%{http_code}" --max-time 20 -r 0-0 \
-        --retry 3 --retry-all-errors --retry-delay 5 "${url}")
+        --retry 3 --retry-all-errors --retry-delay 5 "${url}") || http_code="000"
 
     case "${http_code}" in
         200|206)
@@ -393,65 +395,113 @@ check_url_exists() {
     esac
 }
 
-# 探测单个镜像前缀是否可用：对真实 release URL 经镜像发首字节 range 请求。
-# 与 check_url_exists 的三态判定不同——这里只挑传输通道，无论 404/000/超时/5xx
-# 一律视为"该镜像不可用"，换下一个候选，无需区分原因。
+# bash 3.2 的 set -u 下，${#arr[@]} 对"未声明"数组直接 unbound 崩溃；崩溃若发生在
+# if 条件上下文，EXIT trap 的成功状态会把退出码掩盖成 0（静默断更类事故）。而
+# ${arr[@]+x} 在 bash 3.2 对未声明数组也展开为非空，不能作存在性判断——
+# 用 declare -p 判存在（/bin/bash 3.2 实测：未声明/置空/有值三态均正确）。
+# 用户"注释掉整块配置"是最自然的禁用方式，必须兜住。
+mirrors_enabled() {
+    declare -p MIRROR_PREFIXES >/dev/null 2>&1 || return 1
+    [ "${#MIRROR_PREFIXES[@]}" -gt 0 ]
+}
+
+# 探测单个镜像前缀：对真实 release URL 经镜像发首字节 range 请求，echo HTTP 状态码。
+# 这里挑选的是传输通道，状态码语义由调用方解释：200/206 = 镜像可用；404 = 镜像活
+# 但无此资产（透传型镜像是"未发布"的强证据）；000/5xx = 镜像不可用。
+# --max-filesize 64K：防个别镜像无视 Range 回全量包时，一次探测变成全带宽拉取。
+# --retry 2：救援场景恰是网络抖动期，抗抖动等级与直连探测（--retry 3）对齐。
 probe_mirror() {
     local prefix="$1"
     local url="$2"
     local http_code
 
     # -L：部分镜像以 302 跳转应答，不跟随会误判为不可用
-    http_code=$(curl -sL -o /dev/null -w "%{http_code}" --max-time 15 -r 0-0 "${prefix}/${url}" 2>/dev/null) || return 1
-
-    case "${http_code}" in
-        200|206)
-            return 0
-            ;;
-        *)
-            return 1
-            ;;
-    esac
+    http_code=$(curl -sL -o /dev/null -w "%{http_code}" --max-time 15 --max-filesize 65536 \
+        --retry 2 --retry-delay 2 -r 0-0 "${prefix}/${url}" 2>/dev/null) || http_code="000"
+    echo "${http_code}"
 }
 
-# 任一镜像可用即返回 0（供直连探测失败时的降级判断）。
+# 镜像面判定（供直连探测失败时降级）。返回码：0 = 任一镜像 200/206（胜出前缀写入
+# 全局 PREFERRED_MIRROR_PREFIX，下载时直接采用，避免二次探测）；2 = 无镜像可用但有
+# 404（透传型镜像证实"未发布"，按未发布静默等待，不告警）；1 = 镜像面全灭或未配置。
 probe_mirrors_available() {
     local url="$1"
+    local prefix code saw_404=0
 
-    if [ "${#MIRROR_PREFIXES[@]}" -eq 0 ]; then
-        return 1
-    fi
+    mirrors_enabled || return 1
 
-    local prefix
     for prefix in "${MIRROR_PREFIXES[@]}"; do
-        if probe_mirror "${prefix}" "${url}"; then
-            return 0
-        fi
+        code=$(probe_mirror "${prefix}" "${url}")
+        case "${code}" in
+            200|206)
+                PREFERRED_MIRROR_PREFIX="${prefix}"
+                return 0
+                ;;
+            404)
+                saw_404=1
+                ;;
+        esac
     done
 
+    if [ "${saw_404}" -eq 1 ]; then
+        return 2
+    fi
     return 1
 }
 
 # 解析本次下载尝试的实际 URL：按序探测镜像前缀，首个可用者胜出；全部不可用回退直连。
-# 每次下载尝试都重新解析——上一尝试选中的镜像此时可能已不可用。镜像只反代上游字节，
-# 与直连内容一致，因此跨镜像/直连的 aria2c -c 断点续传是安全的。
+# 每次下载尝试都重新解析——上一尝试选中的镜像此时可能已不可用；救援路径探活的
+# PREFERRED_MIRROR_PREFIX 结论刚得出，直接采用不重复探测。
+# 镜像内容与直连一致是信任假设，下载后另有大小交叉校验 + gzip 校验兜底。
+# 注意：本函数在 $( ) 命令替换内执行，log 必须走 stderr——log 默认写 stdout，
+# 会混进返回的 URL（2026-09-22 评审 Critical 1：污染的 URL 让真实 aria2c 全部拒识）。
 resolve_download_url() {
     local url="$1"
 
-    if [ "${#MIRROR_PREFIXES[@]}" -gt 0 ]; then
-        local prefix
+    if [ -n "${PREFERRED_MIRROR_PREFIX}" ]; then
+        local preferred="${PREFERRED_MIRROR_PREFIX}"
+        PREFERRED_MIRROR_PREFIX=""
+        log "INFO" "使用镜像加速（救援选定）：${preferred}" >&2
+        echo "${preferred}/${url}"
+        return 0
+    fi
+
+    if mirrors_enabled; then
+        local prefix code
         for prefix in "${MIRROR_PREFIXES[@]}"; do
-            if probe_mirror "${prefix}" "${url}"; then
-                log "INFO" "使用镜像加速：${prefix}"
-                echo "${prefix}/${url}"
-                return 0
-            fi
+            code=$(probe_mirror "${prefix}" "${url}")
+            case "${code}" in
+                200|206)
+                    log "INFO" "使用镜像加速：${prefix}" >&2
+                    echo "${prefix}/${url}"
+                    return 0
+                    ;;
+            esac
         done
     fi
 
-    log "INFO" "镜像均不可用，直连下载"
+    log "INFO" "镜像均不可用，直连下载" >&2
     echo "${url}"
     return 0
+}
+
+# 获取直连响应头里的包大小基准（Content-Range 总长优先，Content-Length 兜底），
+# 供下载完成后交叉校验镜像内容陈旧/损坏。基准取不到时不阻塞主流程（跳过比对）。
+# 仅在直连探测成功后调用——直连拥塞的救援场景拿不到可靠基准，宁可跳过不误杀。
+fetch_expected_size() {
+    local url="$1"
+    local headers total
+
+    headers=$(curl -sL -D - -o /dev/null --max-time 20 -r 0-0 "${url}" 2>/dev/null | tr -d '\r') || headers=""
+    # grep 无匹配时 pipeline 在 pipefail 下非零，必须就地兜底，否则会带崩整个脚本
+    total=$(printf '%s\n' "${headers}" | grep -i '^content-range:' | tail -1 | sed 's|.*/||') || total=""
+    if [[ ! "${total}" =~ ^[0-9]+$ ]]; then
+        total=$(printf '%s\n' "${headers}" | grep -i '^content-length:' | tail -1 | awk '{print $2}') || total=""
+    fi
+    if [[ "${total}" =~ ^[0-9]+$ ]]; then
+        RELEASE_EXPECTED_SIZE="${total}"
+        log "INFO" "包大小基准：${RELEASE_EXPECTED_SIZE} 字节（下载后交叉校验）"
+    fi
 }
 
 # 清理未完成的下载残留
@@ -533,6 +583,12 @@ download_file() {
         # 每次尝试重新解析镜像（首个可用者胜出，全部失败回退直连）
         local attempt_url
         attempt_url=$(resolve_download_url "${url}")
+        # 防御：解析产物必须是单行 https URL（命令替换曾把日志行混进返回值，
+        # 真实 aria2c 对多行/非 https 参数直接拒识——评审 Critical 1 的兜底防线）
+        if [[ "${attempt_url}" != https://* || "${attempt_url}" == *$'\n'* ]]; then
+            log "ERROR" "下载地址解析异常，回退直连"
+            attempt_url="${url}"
+        fi
 
         # 使用 -c 参数支持续传，--allow-overwrite=true 覆盖已存在的文件
         # --auto-file-renaming=false 防止自动重命名（避免产生 .1, .2 等文件）
@@ -555,6 +611,22 @@ download_file() {
             fi
             ((++attempt))
             continue
+            fi
+
+            # 镜像内容交叉校验：大小与直连元数据不符 = 疑似内容陈旧/损坏，按损坏处理
+            if [[ -n "${RELEASE_EXPECTED_SIZE}" ]]; then
+                local actual_size
+                actual_size=$(stat -f%z "${output}" 2>/dev/null || stat -c%s "${output}" 2>/dev/null || echo "")
+                if [[ -n "${actual_size}" && "${actual_size}" != "${RELEASE_EXPECTED_SIZE}" ]]; then
+                    log "ERROR" "文件大小 ${actual_size} 与直连元数据 ${RELEASE_EXPECTED_SIZE} 不符（疑似镜像内容陈旧），删除并重试"
+                    rm -f "${output}"
+                    if [ ${attempt} -lt ${MAX_RETRIES} ]; then
+                        log "INFO" "等待 ${RETRY_DELAY} 秒后重试..."
+                        sleep ${RETRY_DELAY}
+                    fi
+                    ((++attempt))
+                    continue
+                fi
             fi
 
             # 验证通过，显示文件大小
@@ -656,10 +728,10 @@ extract_tarball() {
                         log "INFO" "目标日期数据验证通过：${target_date} (数据最新: ${latest_data_date})"
                         data_ok=true
                     else
-                        # 数据日期早于目标日期，这是正常的（数据发布有延迟）
-                        # 但我们仍然标记成功，因为文件已经正确解压
-                        log "INFO" "数据日期 ${latest_data_date} 早于目标日期 ${target_date}，数据可能有延迟"
-                        log "INFO" "但文件已正确解压，标记为成功"
+                        # 数据日期早于目标日期：正常发布延迟，或镜像内容陈旧。
+                        # 仍标记成功（文件已正确解压），但升 WARN 提示留意。
+                        log "WARN" "数据日期 ${latest_data_date} 早于目标日期 ${target_date}，数据可能有延迟"
+                        log "WARN" "文件已正确解压，标记为成功（若反复出现请排查镜像内容陈旧）"
                         data_ok=true
                     fi
                 else
@@ -856,17 +928,28 @@ main() {
     fi
     if [ "${probe_rc}" -ne 0 ]; then
         # 直连探测失败（000/5xx）≠ 未发布——GitHub 链路间歇拥塞时发布往往仍在线。
-        # 任一镜像能探测到该 URL 就视为已发布，继续走镜像下载；直连与镜像全灭才
-        # 告警退出（rc=2 的告警语义保留给"真的全都连不上"）。
-        if probe_mirrors_available "${release_url}"; then
-            log "INFO" "直连探测失败（HTTP 000/5xx），但镜像探测可用，继续通过镜像下载"
-        else
-            log "ERROR" "发布探测失败（rc=${probe_rc}，直连与镜像均不可用），以失败退出供调度器告警"
-            exit 1
-        fi
+        # 用镜像面重新判定：任一镜像探到 → 继续下载；透传镜像 404 → 按未发布静默
+        # 等待（与直连 404 同语义，避免把正常等待升级成告警）；直连与镜像全灭 →
+        # 才是真故障，告警退出（rc=2 的告警语义保留给"全都连不上"）。
+        local rescue_rc=0
+        probe_mirrors_available "${release_url}" || rescue_rc=$?
+        case "${rescue_rc}" in
+            0)
+                log "INFO" "直连探测失败（HTTP 000/5xx），镜像探测可用，继续通过镜像下载"
+                ;;
+            2)
+                log "INFO" "直连探测失败，镜像返回 404，判定发布尚未上线，将在下次检测"
+                exit 0
+                ;;
+            *)
+                log "ERROR" "发布探测失败（rc=${probe_rc}，直连与镜像均不可用），以失败退出供调度器告警"
+                exit 1
+                ;;
+        esac
     fi
 
     log "INFO" "找到发布：${release_url}"
+    fetch_expected_size "${release_url}"
 
     # 下载文件
     local output_file="qlib_bin_${target_date}.tar.gz"
