@@ -22,7 +22,21 @@ LOG_FILE="${LOG_DIR}/download.log"          # 日志文件
 STATE_FILE="${LOG_DIR}/.download_state"     # 状态文件（记录最后成功的日期）
 MAX_RETRIES=3                               # 最大重试次数
 RETRY_DELAY=10                              # 重试延迟（秒）
-ARIA2C_OPTIONS="-x 8"                         # aria2c参数（简化：不使用分块下载，避免并发问题）
+# GitHub 加速镜像前缀（按序探测，首个可用者胜出；全部失败回退直连）。
+# 镜像只是反向代理，字节与直连一致，gzip 完整性校验不变。可用性变化频繁
+# （2026-09-22 实测：ghfast.top 可用且并发线性扩展；ghp.ci/gh-proxy.com/
+# ghproxy.net/gh.llkk.cc 均不可用），探测不通过自动换下一个，勿写死依赖单一镜像。
+# 自建 Cloudflare Worker 反代后把地址加在首位（见 scripts/cloudflare_worker_gh_proxy.js）。
+MIRROR_PREFIXES=(
+    "https://ghfast.top"
+    "https://ghp.ci"
+)
+# -x 16 -s 16 -k 1M：镜像/CDN 对单连接限速，多连接并发近似线性叠加
+#   （直连 GitHub 实测 ~100KB/s/连接，540MB 要 100+ 分钟；并发后 3-10 分钟）
+# --lowest-speed-limit=10K：掐死停滞连接。默认 0 = 永不掐断，传输停滞后无限期挂死
+#   （2026-09-22 曾在只差最后 512 字节处挂 15+ 分钟）
+# --timeout/--connect-timeout/--retry-wait：坏连接快速重建，不占用下载重试次数
+ARIA2C_OPTIONS="-x 16 -s 16 -k 1M --lowest-speed-limit=10K --timeout=30 --connect-timeout=10 --retry-wait=2"
 MAX_CHECK_DAYS=9                           # 最多向前查找N个交易日（处理长假）
 LOCK_FILE="${LOG_DIR}/.download_lock"       # 锁文件（防止并发执行）
 LOCK_TIMEOUT=3600                           # 锁超时时间（秒，1小时）
@@ -379,6 +393,67 @@ check_url_exists() {
     esac
 }
 
+# 探测单个镜像前缀是否可用：对真实 release URL 经镜像发首字节 range 请求。
+# 与 check_url_exists 的三态判定不同——这里只挑传输通道，无论 404/000/超时/5xx
+# 一律视为"该镜像不可用"，换下一个候选，无需区分原因。
+probe_mirror() {
+    local prefix="$1"
+    local url="$2"
+    local http_code
+
+    # -L：部分镜像以 302 跳转应答，不跟随会误判为不可用
+    http_code=$(curl -sL -o /dev/null -w "%{http_code}" --max-time 15 -r 0-0 "${prefix}/${url}" 2>/dev/null) || return 1
+
+    case "${http_code}" in
+        200|206)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# 任一镜像可用即返回 0（供直连探测失败时的降级判断）。
+probe_mirrors_available() {
+    local url="$1"
+
+    if [ "${#MIRROR_PREFIXES[@]}" -eq 0 ]; then
+        return 1
+    fi
+
+    local prefix
+    for prefix in "${MIRROR_PREFIXES[@]}"; do
+        if probe_mirror "${prefix}" "${url}"; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+# 解析本次下载尝试的实际 URL：按序探测镜像前缀，首个可用者胜出；全部不可用回退直连。
+# 每次下载尝试都重新解析——上一尝试选中的镜像此时可能已不可用。镜像只反代上游字节，
+# 与直连内容一致，因此跨镜像/直连的 aria2c -c 断点续传是安全的。
+resolve_download_url() {
+    local url="$1"
+
+    if [ "${#MIRROR_PREFIXES[@]}" -gt 0 ]; then
+        local prefix
+        for prefix in "${MIRROR_PREFIXES[@]}"; do
+            if probe_mirror "${prefix}" "${url}"; then
+                log "INFO" "使用镜像加速：${prefix}"
+                echo "${prefix}/${url}"
+                return 0
+            fi
+        done
+    fi
+
+    log "INFO" "镜像均不可用，直连下载"
+    echo "${url}"
+    return 0
+}
+
 # 清理未完成的下载残留
 cleanup_incomplete_downloads() {
     local output="$1"
@@ -455,9 +530,13 @@ download_file() {
     while [ ${attempt} -le ${MAX_RETRIES} ]; do
         log "INFO" "开始下载（尝试 ${attempt}/${MAX_RETRIES}）"
 
+        # 每次尝试重新解析镜像（首个可用者胜出，全部失败回退直连）
+        local attempt_url
+        attempt_url=$(resolve_download_url "${url}")
+
         # 使用 -c 参数支持续传，--allow-overwrite=true 覆盖已存在的文件
         # --auto-file-renaming=false 防止自动重命名（避免产生 .1, .2 等文件）
-        if aria2c ${ARIA2C_OPTIONS} -c --allow-overwrite=true --auto-file-renaming=false -o "${output}" "${url}"; then
+        if aria2c ${ARIA2C_OPTIONS} -c --allow-overwrite=true --auto-file-renaming=false -o "${output}" "${attempt_url}"; then
             log "INFO" "下载成功：${output}"
 
             # 验证文件存在
@@ -643,6 +722,10 @@ extract_tarball() {
 
 # ==================== 主流程 ====================
 main() {
+    # LOG_DIR 必须在获取锁之前存在：锁文件与日志都写在其中，新机器首次运行
+    # 若目录缺失，锁写入/tee 会在 set -euo pipefail 下直接把脚本带崩
+    mkdir -p "${LOG_DIR}"
+
     # 尝试获取锁，如果失败则退出
     if ! acquire_lock; then
         exit 0
@@ -772,8 +855,15 @@ main() {
         exit 0
     fi
     if [ "${probe_rc}" -ne 0 ]; then
-        log "ERROR" "发布探测失败（rc=${probe_rc}），以失败退出供调度器告警"
-        exit 1
+        # 直连探测失败（000/5xx）≠ 未发布——GitHub 链路间歇拥塞时发布往往仍在线。
+        # 任一镜像能探测到该 URL 就视为已发布，继续走镜像下载；直连与镜像全灭才
+        # 告警退出（rc=2 的告警语义保留给"真的全都连不上"）。
+        if probe_mirrors_available "${release_url}"; then
+            log "INFO" "直连探测失败（HTTP 000/5xx），但镜像探测可用，继续通过镜像下载"
+        else
+            log "ERROR" "发布探测失败（rc=${probe_rc}，直连与镜像均不可用），以失败退出供调度器告警"
+            exit 1
+        fi
     fi
 
     log "INFO" "找到发布：${release_url}"

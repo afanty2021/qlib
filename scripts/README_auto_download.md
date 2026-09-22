@@ -55,8 +55,11 @@
     ↓
 探测 GitHub Release（curl -r 0-0 首字节探测 + 重试）
 ├─ 404 未上线 → 等待下次检测（exit 0）
-├─ 探测失败（网络/5xx/超时）→ 报错退出（exit 1，调度器可感知）
-└─ 已上线 → 下载（下载后 gzip 校验，损坏自动重试）
+├─ 探测失败（网络/5xx/超时）
+│   ├─ 任一镜像探测到该 URL → 视为已发布，走镜像下载（镜像链救援）
+│   └─ 直连与镜像均不可用 → 报错退出（exit 1，调度器可感知）
+└─ 已上线 → 选镜像下载（镜像按序探测，全部失败回退直连；
+            下载后 gzip 校验，损坏自动重试；每次重试重新选镜像）
     ↓
 备份现有数据
     ↓
@@ -170,7 +173,15 @@ STATE_FILE="${LOG_DIR}/.download_state"  # 记录最后成功的日期
 # 下载配置
 MAX_RETRIES=3
 RETRY_DELAY=10
-ARIA2C_OPTIONS="-x 8"
+# 多连接并发 + 掐死停滞连接 + 坏连接快速重建（设计依据见脚本内注释）
+ARIA2C_OPTIONS="-x 16 -s 16 -k 1M --lowest-speed-limit=10K --timeout=30 --connect-timeout=10 --retry-wait=2"
+
+# GitHub 加速镜像前缀（按序探测，首个可用者胜出；全部失败回退直连）。
+# 自建 Cloudflare Worker 反代后把地址加在首位（见下方"镜像加速"一节）。
+MIRROR_PREFIXES=(
+    "https://ghfast.top"
+    "https://ghp.ci"
+)
 
 # 交易日配置
 MAX_CHECK_DAYS=9  # 最多向前查找9个交易日（处理长假）
@@ -187,6 +198,33 @@ HOLIDAYS_2025=(
     "2025-10-05" "2025-10-06" "2025-10-07" "2025-10-08"
 )
 ```
+
+## 镜像加速
+
+直连 GitHub Releases 在无代理网络下实测仅 ~100KB/s（540MB 需 100+ 分钟），且存在
+整包挂死风险。脚本通过 `MIRROR_PREFIXES` 镜像链解决：
+
+- **下载选路**：每次下载尝试按序探测镜像（首字节 range 请求，`-L` 跟随跳转，
+  200/206 为可用），首个可用者胜出；全部不可用回退直连。镜像只是反向代理，
+  字节与直连一致，`gzip -t` 完整性校验保持不变。
+- **探测救援**：直连探测失败（HTTP 000/5xx，无法区分"未发布"）时，任一镜像能
+  探测到该 URL 即视为已发布并继续下载，避免把"直连拥塞"误判成"探测失败"告警。
+- **镜像可用性变化频繁**（2026-09-22 实测 ghfast.top 可用、ghp.ci/gh-proxy.com/
+  ghproxy.net/gh.llkk.cc 均不可用），列表按需增删即可，探测不通过自动跳过。
+- **aria2c 侧**：`-x 16 -s 16 -k 1M` 并发分段（镜像实测可近似线性叠加）；
+  `--lowest-speed-limit=10K` 掐死停滞连接（默认永不掐断会无限期挂死）；
+  `--timeout=30 --connect-timeout=10 --retry-wait=2` 快速重建坏连接。
+
+### 自建 Cloudflare Worker 反代（长期最稳，推荐有 CF 账号时部署）
+
+公共镜像随时可能跑路或限流；自建 Worker 一行配置即可获得专属加速通道：
+
+1. 参考 `scripts/cloudflare_worker_gh_proxy.js` 文件头注释，在 CF Dashboard
+   创建 Worker 并粘贴部署（无需本地 CLI）。
+2. 把 `https://<your-worker>.workers.dev` 加到 `MIRROR_PREFIXES` 首位。
+
+Worker 内置 GitHub 系域名白名单（防开放代理滥用）、Range 透传（aria2c 分段可用）、
+302 跳转改写（release-assets 链路保持加速）。
 
 ## 日志查看
 
