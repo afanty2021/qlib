@@ -35,7 +35,9 @@ export default {
     const target = reqUrl.pathname.slice(1) + reqUrl.search;
 
     // 优先按原文解析：decodeURIComponent 会把签名 URL 里的 %2F 改写成 /，
-    // 破坏查询签名（SigV4/Azure SAS 类）；仅当原文不是合法 URL 时才尝试解码
+    // 破坏查询签名（SigV4/Azure SAS 类）；仅当原文不是合法 URL 时才尝试解码。
+    // 注意 decode 回退只对"整体编码"的 legacy 输入有意义，且会改写其查询串；
+    // 正确编码的客户端不受影响（原文解析即成功）
     let targetUrl;
     try {
       targetUrl = new URL(target);

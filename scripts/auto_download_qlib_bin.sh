@@ -401,8 +401,9 @@ check_url_exists() {
 
 # bash 3.2 的 set -u 下，${#arr[@]} 对"未声明"数组直接 unbound 崩溃；崩溃若发生在
 # if 条件上下文，退出码会被 EXIT trap 掩盖成 0（静默断更类事故）。
-# ${arr[@]+x} 不能作守卫：bash 3.2（3.2.57 实测）其展开结果依上下文而异——
-# 赋值/echo 处为空，但在 [ -n ... ] 判定中却为真，守卫会穿透到长度检查崩溃。
+# ${arr[@]+x} 不能作守卫：bash 3.2.57 实测其展开依上下文而异——赋值/echo 处为空，
+# 但 [ -n ... ] 判定中为真（顶层与函数内皆然）。最小复现：
+#   /bin/bash -c 'set -u; if [ -n "${NOSUCH[@]+x}" ]; then echo TRUTHY; else echo EMPTY; fi'
 # declare -p 判存在在所有上下文一致（未声明/置空/有值三态实测正确）。
 # 用户"注释掉整块配置"是最自然的禁用方式，必须兜住。
 mirrors_enabled() {
