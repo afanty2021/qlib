@@ -478,8 +478,8 @@ vim scripts/auto_download_qlib_bin.sh
 # 编辑脚本
 vim scripts/auto_download_qlib_bin.sh
 
-# 修改配置
-ARIA2C_OPTIONS="-x 32 -s 32"  # 增加连接数
+# 修改配置（注意：aria2 的 -x 硬上限为 16，>16 直接报错 errorCode=28）
+ARIA2C_OPTIONS="-x 16 -s 32"  # 增加分段数（连接数已到上限）
 
 # 或限制下载速度
 ARIA2C_OPTIONS="-x 16 -s 16 --max-download-limit=5000K"
@@ -580,8 +580,8 @@ chmod +x ~/scripts/cleanup_qlib_backup.sh
 ### aria2c 参数调优
 
 ```bash
-# 高速连接（适合千兆以上网络）
-ARIA2C_OPTIONS="-x 32 -s 32 --split=32 --min-split-size=1M"
+# 高速连接（适合千兆以上网络；-x 硬上限 16）
+ARIA2C_OPTIONS="-x 16 -s 32 --min-split-size=1M"
 
 # 稳定连接（适合不稳定网络）
 ARIA2C_OPTIONS="-x 8 -s 8 --timeout=120 --connect-timeout=60"

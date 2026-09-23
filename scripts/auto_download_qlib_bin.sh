@@ -47,9 +47,9 @@ PENDING_FILE_RE='qlib_bin_([0-9]{4}-[0-9]{2}-[0-9]{2})\.tar\.gz$'
 # 下载后与直连元数据交叉校验的包大小基准（字节）。探测成功时由 fetch_expected_size
 # 填充；为空表示基准缺失（直连不可用/解析失败），跳过比对。
 RELEASE_EXPECTED_SIZE=""
-# 救援路径探活的镜像前缀（probe_mirrors_available 写入，resolve_download_url
-# 消费一次后清空）。必须在此声明：set -u 下未声明变量会让 resolve_download_url
-# 在命令替换内被 unbound 错误打断，静默退化成直连。
+# 救援路径探活的镜像前缀（probe_mirrors_available 写入，download_file 在父层
+# 取走并清空后仅用于首次尝试）。必须在此声明：set -u 下未声明变量会让
+# download_file 被 unbound 错误打断。
 PREFERRED_MIRROR_PREFIX=""
 
 # 中国节假日配置（YYYY-MM-DD 格式）
@@ -75,6 +75,8 @@ acquire_lock() {
 
         # PID 存活且确为本脚本进程 → 不偷锁。下载可持续 100+ 分钟（直连最坏情形），
         # 按锁龄强拆会让第二个实例并发写同一文件。锁龄不参与判定。
+        # 注：kill -0 检查与下方写锁之间存在 TOCTOU 窗口（两个实例同时通过检查）；
+        # 当前调度为单发串行（hermes 三档 + 锁跳过语义），无实害，记录在案。
         if [[ -n "${lock_pid}" ]] && kill -0 "${lock_pid}" 2>/dev/null \
             && ps -p "${lock_pid}" -o command= 2>/dev/null | grep -q "auto_download_qlib_bin"; then
             log "WARN" "另一个实例正在运行（PID: ${lock_pid}），跳过本次执行"
@@ -373,13 +375,15 @@ check_url_exists() {
     local url="$1"
     local http_code
 
-    # -r 0-0 只取首字节探测：整包下载到 /dev/null 会撞上 --max-time 30 返回 000，
+    # -r 0-0 只取首字节探测：整包下载到 /dev/null 会撞上 --max-time 超时返回 000，
     # 被误判为"发布尚未上线"。GitHub release 链路存在分钟级间歇拥塞（000 可自愈），
     # curl 原生重试 3 次以穿透短拥塞窗口（404 也会被重试，多花 ~15s，可接受）。
-    # 赋值必须挂兜底：curl 自身崩溃（非 000 输出而是退出码非零）时，set -e 会
-    # 在镜像救援之前直接带崩脚本。
+    # 赋值必须挂兜底：curl 自身崩溃（无输出、退出码非零）时 set -e 会直接带崩脚本；
+    # 兜底时保留已捕获的 4xx/5xx（如服务器明确回了 404/503）——它们有判定价值，
+    # 只有空/000/2xx 截断才真正等价于"探测失败"。
     http_code=$(curl -L -s -o /dev/null -w "%{http_code}" --max-time 20 -r 0-0 \
-        --retry 3 --retry-all-errors --retry-delay 5 "${url}") || http_code="000"
+        --retry 3 --retry-all-errors --retry-delay 5 "${url}") \
+        || { [[ "${http_code}" =~ ^[45] ]] || http_code="000"; }
 
     case "${http_code}" in
         200|206)
@@ -396,9 +400,10 @@ check_url_exists() {
 }
 
 # bash 3.2 的 set -u 下，${#arr[@]} 对"未声明"数组直接 unbound 崩溃；崩溃若发生在
-# if 条件上下文，EXIT trap 的成功状态会把退出码掩盖成 0（静默断更类事故）。而
-# ${arr[@]+x} 在 bash 3.2 对未声明数组也展开为非空，不能作存在性判断——
-# 用 declare -p 判存在（/bin/bash 3.2 实测：未声明/置空/有值三态均正确）。
+# if 条件上下文，退出码会被 EXIT trap 掩盖成 0（静默断更类事故）。
+# ${arr[@]+x} 不能作守卫：bash 3.2（3.2.57 实测）其展开结果依上下文而异——
+# 赋值/echo 处为空，但在 [ -n ... ] 判定中却为真，守卫会穿透到长度检查崩溃。
+# declare -p 判存在在所有上下文一致（未声明/置空/有值三态实测正确）。
 # 用户"注释掉整块配置"是最自然的禁用方式，必须兜住。
 mirrors_enabled() {
     declare -p MIRROR_PREFIXES >/dev/null 2>&1 || return 1
@@ -409,7 +414,10 @@ mirrors_enabled() {
 # 这里挑选的是传输通道，状态码语义由调用方解释：200/206 = 镜像可用；404 = 镜像活
 # 但无此资产（透传型镜像是"未发布"的强证据）；000/5xx = 镜像不可用。
 # --max-filesize 64K：防个别镜像无视 Range 回全量包时，一次探测变成全带宽拉取。
-# --retry 2：救援场景恰是网络抖动期，抗抖动等级与直连探测（--retry 3）对齐。
+# --retry 2：救援场景恰是网络抖动期，抗抖动等级与直连探测（--retry 3）对齐；
+#   注意 --retry 不覆盖 connection-refused——DNS 已死的镜像每次探测仍固定多付
+#   ~4s（如 ghp.ci 死亡期），可接受。
+# 兜底保留 4xx/5xx 的理由同 check_url_exists：服务器明确应答的状态有判定价值。
 probe_mirror() {
     local prefix="$1"
     local url="$2"
@@ -417,7 +425,8 @@ probe_mirror() {
 
     # -L：部分镜像以 302 跳转应答，不跟随会误判为不可用
     http_code=$(curl -sL -o /dev/null -w "%{http_code}" --max-time 15 --max-filesize 65536 \
-        --retry 2 --retry-delay 2 -r 0-0 "${prefix}/${url}" 2>/dev/null) || http_code="000"
+        --retry 2 --retry-delay 2 -r 0-0 "${prefix}/${url}" 2>/dev/null) \
+        || { [[ "${http_code}" =~ ^[45] ]] || http_code="000"; }
     echo "${http_code}"
 }
 
@@ -450,21 +459,13 @@ probe_mirrors_available() {
 }
 
 # 解析本次下载尝试的实际 URL：按序探测镜像前缀，首个可用者胜出；全部不可用回退直连。
-# 每次下载尝试都重新解析——上一尝试选中的镜像此时可能已不可用；救援路径探活的
-# PREFERRED_MIRROR_PREFIX 结论刚得出，直接采用不重复探测。
+# 每次下载尝试都重新解析——上一尝试选中的镜像此时可能已不可用（救援选定的前缀
+# 由 download_file 在父层消费，不经过本函数）。
 # 镜像内容与直连一致是信任假设，下载后另有大小交叉校验 + gzip 校验兜底。
 # 注意：本函数在 $( ) 命令替换内执行，log 必须走 stderr——log 默认写 stdout，
 # 会混进返回的 URL（2026-09-22 评审 Critical 1：污染的 URL 让真实 aria2c 全部拒识）。
 resolve_download_url() {
     local url="$1"
-
-    if [ -n "${PREFERRED_MIRROR_PREFIX}" ]; then
-        local preferred="${PREFERRED_MIRROR_PREFIX}"
-        PREFERRED_MIRROR_PREFIX=""
-        log "INFO" "使用镜像加速（救援选定）：${preferred}" >&2
-        echo "${preferred}/${url}"
-        return 0
-    fi
 
     if mirrors_enabled; then
         local prefix code
@@ -494,8 +495,13 @@ fetch_expected_size() {
 
     headers=$(curl -sL -D - -o /dev/null --max-time 20 -r 0-0 "${url}" 2>/dev/null | tr -d '\r') || headers=""
     # grep 无匹配时 pipeline 在 pipefail 下非零，必须就地兜底，否则会带崩整个脚本
+    local final_code
+    final_code=$(printf '%s\n' "${headers}" | grep -i '^HTTP/' | tail -1 | awk '{print $2}') || final_code=""
     total=$(printf '%s\n' "${headers}" | grep -i '^content-range:' | tail -1 | sed 's|.*/||') || total=""
-    if [[ ! "${total}" =~ ^[0-9]+$ ]]; then
+    # Content-Length 兜底仅在最终应答为 200（无 range 语义）时启用：畸形 206
+    # （无 Content-Range）的 Content-Length 是本次分段的长度（如 1），拿来当
+    # 总长基准会让每次下载都"大小不符"三连败。
+    if [[ ! "${total}" =~ ^[0-9]+$ && "${final_code}" == "200" ]]; then
         total=$(printf '%s\n' "${headers}" | grep -i '^content-length:' | tail -1 | awk '{print $2}') || total=""
     fi
     if [[ "${total}" =~ ^[0-9]+$ ]]; then
@@ -514,6 +520,7 @@ cleanup_incomplete_downloads() {
 
     # 查找并清理所有相关的未完成文件
     # 1. 先清理与主文件名相关的文件 (.tar.gz, .tar.gz.aria2等)
+    local had_control=0
     for file in "${download_dir}/${output}"*; do
         if [[ -f "${file}" ]]; then
             local filename
@@ -523,9 +530,19 @@ cleanup_incomplete_downloads() {
             if [[ "${filename}" == *.aria2 ]]; then
                 log "INFO" "清理未完成下载的控制文件：${filename}"
                 rm -f "${file}"
+                had_control=1
             fi
         fi
     done
+
+    # 控制文件存在 = 上一次 aria2c 未正常收尾（正常完成时 aria2 会自行删除控制
+    # 文件）。此时数据文件不可信：aria2 会预分配整尺寸文件，-c 在没有控制文件时
+    # 按"本地长度 == 总长"直接判完成 → 3 秒假成功 → gzip 闸门拦截 → 白烧一次
+    # 重试（2026-09-22 生产日志 23:42:45-48 实证）。控制文件一删，数据文件同删。
+    if [ "${had_control}" -eq 1 ] && [[ -f "${download_dir}/${output}" ]]; then
+        log "INFO" "同步删除未完成的数据文件：${output}"
+        rm -f "${download_dir}/${output}"
+    fi
 
     # 2. 再清理自动重命名的分块文件 (.tar.1.gz, .tar.2.gz 等)
     for file in "${download_dir}/${base_name}".tar.*.gz; do
@@ -574,15 +591,27 @@ download_file() {
     local output="$2"
     local attempt=1
 
+    # 救援探活的前缀必须在父层取走并清空：download_file 里对 resolve 的调用在
+    # $( ) 子 shell 内，子 shell 里的清空对父 shell 无效，前缀会被钉死在全部
+    # 重试上，镜像中途死亡时尝试 2/3 不会切换通道（复审合并阻塞项）。
+    # 它只作为首次尝试的选路；后续尝试由 resolve 重新探测选路。
+    local first_mirror="${PREFERRED_MIRROR_PREFIX}"
+    PREFERRED_MIRROR_PREFIX=""
+
     # 在开始下载前，清理可能存在的未完成下载
     cleanup_incomplete_downloads "${output}" "${DOWNLOAD_DIR}"
 
     while [ ${attempt} -le ${MAX_RETRIES} ]; do
         log "INFO" "开始下载（尝试 ${attempt}/${MAX_RETRIES}）"
 
-        # 每次尝试重新解析镜像（首个可用者胜出，全部失败回退直连）
+        # 首次尝试用救援选定的镜像；后续尝试重新解析（首个可用者胜出，全部失败回退直连）
         local attempt_url
-        attempt_url=$(resolve_download_url "${url}")
+        if [ "${attempt}" -eq 1 ] && [ -n "${first_mirror}" ]; then
+            log "INFO" "使用镜像加速（救援选定）：${first_mirror}" >&2
+            attempt_url="${first_mirror}/${url}"
+        else
+            attempt_url=$(resolve_download_url "${url}")
+        fi
         # 防御：解析产物必须是单行 https URL（命令替换曾把日志行混进返回值，
         # 真实 aria2c 对多行/非 https 参数直接拒识——评审 Critical 1 的兜底防线）
         if [[ "${attempt_url}" != https://* || "${attempt_url}" == *$'\n'* ]]; then
@@ -803,8 +832,9 @@ main() {
         exit 0
     fi
 
-    # 确保脚本退出时释放锁
-    trap release_lock EXIT
+    # 确保脚本退出时释放锁，且保留原始退出码：裸 release_lock 会让 set -e 隐式
+    # 中止的非零退出被 trap 内最后命令的状态掩盖成 0（静默断更类事故的通用形态）
+    trap 'rc=$?; release_lock; exit $rc' EXIT
 
     log "INFO" "========================================"
     log "INFO" "Qlib 数据自动下载脚本启动"

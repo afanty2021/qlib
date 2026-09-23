@@ -34,11 +34,17 @@ export default {
     const reqUrl = new URL(request.url);
     const target = reqUrl.pathname.slice(1) + reqUrl.search;
 
+    // 优先按原文解析：decodeURIComponent 会把签名 URL 里的 %2F 改写成 /，
+    // 破坏查询签名（SigV4/Azure SAS 类）；仅当原文不是合法 URL 时才尝试解码
     let targetUrl;
     try {
-      targetUrl = new URL(decodeURIComponent(target));
+      targetUrl = new URL(target);
     } catch {
-      return new Response("usage: /https://github.com/<owner>/<repo>/...\n", { status: 400 });
+      try {
+        targetUrl = new URL(decodeURIComponent(target));
+      } catch {
+        return new Response("usage: /https://github.com/<owner>/<repo>/...\n", { status: 400 });
+      }
     }
 
     const host = targetUrl.hostname;
@@ -48,11 +54,20 @@ export default {
     if (!allowed) {
       return new Response("host not allowed\n", { status: 403 });
     }
+    // 仅允许标准 https 与默认端口，杜绝协议/端口维度的滥用面
+    if (targetUrl.protocol !== "https:" || targetUrl.port !== "") {
+      return new Response("protocol/port not allowed\n", { status: 400 });
+    }
 
     // new Request(targetUrl, request) 会复制包括 Range 在内的请求头
-    const upstream = await fetch(new Request(targetUrl, request), {
-      redirect: "manual",
-    });
+    let upstream;
+    try {
+      upstream = await fetch(new Request(targetUrl, request), {
+        redirect: "manual",
+      });
+    } catch {
+      return new Response("upstream fetch failed\n", { status: 502 });
+    }
 
     if (upstream.status >= 300 && upstream.status < 400) {
       const location = upstream.headers.get("location");
@@ -68,6 +83,12 @@ export default {
 
     const headers = new Headers(upstream.headers);
     headers.set("access-control-allow-origin", "*");
+    // 声明了 content-encoding 就必须连带去掉 length：运行时可能已解码正文，
+    // 头与字节流不一致会让客户端二次解码/按错误长度分段的
+    if (headers.has("content-encoding")) {
+      headers.delete("content-encoding");
+      headers.delete("content-length");
+    }
     return new Response(upstream.body, { status: upstream.status, headers });
   },
 };
